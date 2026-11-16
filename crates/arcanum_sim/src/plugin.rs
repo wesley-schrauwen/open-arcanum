@@ -8,9 +8,10 @@ use std::time::Duration;
 
 use bevy_app::{App, FixedUpdate, Plugin};
 use bevy_ecs::prelude::*;
-use bevy_time::{Fixed, Time, TimePlugin};
+use arcanum_rules::RulesData;
+use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
 
-use crate::{NetIdAllocator, Tick};
+use crate::{Inbox, NetIdAllocator, Outbox, Session, SimRules, Tick, handle_intents};
 
 /// Host ticks per second.
 pub const TICK_HZ: f64 = 30.0;
@@ -23,7 +24,7 @@ pub struct SimTick(pub Tick);
 #[derive(Resource, Debug, Default)]
 pub struct NetIds(pub NetIdAllocator);
 
-/// Host resources and the tick counter.
+/// Host resources, the session and the tick counter. Expects [`SimRules`].
 pub struct SimPlugin;
 
 impl Plugin for SimPlugin {
@@ -31,7 +32,11 @@ impl Plugin for SimPlugin {
         app.insert_resource(Time::<Fixed>::from_hz(TICK_HZ))
             .init_resource::<SimTick>()
             .init_resource::<NetIds>()
-            .add_systems(FixedUpdate, advance_tick);
+            .init_resource::<SimRules>()
+            .init_resource::<Inbox>()
+            .init_resource::<Outbox>()
+            .init_resource::<Session>()
+            .add_systems(FixedUpdate, (handle_intents, advance_tick).chain());
     }
 }
 
@@ -45,10 +50,26 @@ pub struct SimApp {
 }
 
 impl SimApp {
-    pub fn new() -> Self {
+    pub fn new(rules: RulesData) -> Self {
         let mut app = App::new();
-        app.add_plugins((TimePlugin, SimPlugin));
+        app.add_plugins((TimePlugin, SimPlugin)).insert_resource(SimRules(rules));
         Self { app }
+    }
+
+    /// Makes every [`update`](Self::update) after the first run exactly one tick, whatever the
+    /// wall clock says. For tests.
+    pub fn use_manual_clock(&mut self) {
+        self.app.insert_resource(TimeUpdateStrategy::ManualDuration(Self::tick_duration()));
+    }
+
+    /// Queues intents for the next tick.
+    pub fn receive(&mut self, intents: impl IntoIterator<Item = (crate::PlayerId, crate::PlayerIntent)>) {
+        self.app.world_mut().resource_mut::<Inbox>().0.extend(intents);
+    }
+
+    /// Takes the deltas written since the last call.
+    pub fn take_deltas(&mut self) -> Vec<(crate::PlayerId, crate::LedgerDelta)> {
+        std::mem::take(&mut self.app.world_mut().resource_mut::<Outbox>().0)
     }
 
     /// Runs one frame: as many fixed ticks as the elapsed time allows.
@@ -66,21 +87,13 @@ impl SimApp {
     }
 }
 
-impl Default for SimApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use bevy_time::TimeUpdateStrategy;
-
     use super::*;
 
     #[test]
     fn ticks_follow_elapsed_time() {
-        let mut sim = SimApp::new();
+        let mut sim = SimApp::new(RulesData::default());
         sim.app.insert_resource(TimeUpdateStrategy::ManualDuration(SimApp::tick_duration() * 3));
         sim.update(); // The first frame only starts the clock.
         assert_eq!(sim.tick(), 0);
@@ -92,7 +105,7 @@ mod tests {
 
     #[test]
     fn allocator_is_a_resource() {
-        let mut sim = SimApp::new();
+        let mut sim = SimApp::new(RulesData::default());
         let mut ids = sim.app.world_mut().resource_mut::<NetIds>();
         assert_ne!(ids.0.allocate(), ids.0.allocate());
     }

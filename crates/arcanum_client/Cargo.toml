@@ -11,6 +11,8 @@ bevy = { version = "0.20", features = ["mp3", "wav", "bmp"] }
 arcanum_vfs = { path = "../arcanum_vfs" }
 arcanum_formats = { path = "../arcanum_formats" }
 arcanum_rules = { path = "../arcanum_rules" }
+arcanum_sim = { path = "../arcanum_sim" }
+arcanum_net = { path = "../arcanum_net" }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.2.1"
 dirs = "7.0.0"

@@ -4,10 +4,9 @@
 //! the order received; they never change shared state on their own.
 
 use arcanum_formats::map::TileLoc;
-use arcanum_rules::CharacterSheet;
 use serde::{Deserialize, Serialize};
 
-use crate::{NetId, PlayerId};
+use crate::{Creation, NetId, PlayerId};
 
 /// A host simulation step number.
 pub type Tick = u64;
@@ -22,9 +21,9 @@ pub enum EntityKind {
 /// A change to shared state, sent from the host to clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LedgerDelta {
-    /// The player's character sheet after an action (creation preview, stat change). The
-    /// client replaces its preview with it.
-    CharacterUpdate { player: PlayerId, sheet: CharacterSheet },
+    /// The host's copy of the player's character after the character request numbered `ack`
+    /// (applied or refused). The client takes it and replays its later requests on top.
+    CharacterUpdate { player: PlayerId, ack: u32, creation: Creation },
     /// The player's character was accepted; the world is booting.
     CharacterAccepted { player: PlayerId },
     /// An entity appeared.
@@ -46,7 +45,7 @@ mod tests {
     #[test]
     fn deltas_serialise_round_trip() {
         let deltas = [
-            LedgerDelta::CharacterUpdate { player: PlayerId(7), sheet: CharacterSheet::default() },
+            LedgerDelta::CharacterUpdate { player: PlayerId(7), ack: 3, creation: Creation::default() },
             LedgerDelta::Spawn { net_id: NetId(1), kind: EntityKind::Pc { player: PlayerId(7) }, position: TileLoc { x: 3, y: 4 } },
             LedgerDelta::Move { net_id: NetId(1), path: vec![TileLoc { x: 3, y: 5 }, TileLoc { x: 4, y: 6 }] },
             LedgerDelta::Tick(12),

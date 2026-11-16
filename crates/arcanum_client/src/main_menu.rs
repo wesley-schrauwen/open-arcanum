@@ -308,6 +308,7 @@ fn spawn_menu(
 }
 
 /// Runs a menu button's action when it is pressed.
+#[allow(clippy::too_many_arguments)]
 fn on_activate(
     activate: On<Activate>,
     actions: Query<&MenuAction>,
@@ -315,6 +316,8 @@ fn on_activate(
     sounds: Option<Res<MenuSounds>>,
     mut next_state: ResMut<NextState<AppState>>,
     mut exit: MessageWriter<AppExit>,
+    mut host: Option<ResMut<crate::character_host::CharacterHost>>,
+    creation: Option<Res<crate::create_character::CreationData>>,
 ) {
     let Ok(&action) = actions.get(activate.entity) else { return };
     if !action.is_available() {
@@ -334,8 +337,12 @@ fn on_activate(
         MenuAction::PickCharacter => next_state.set(AppState::NewGame),
         MenuAction::BackToSinglePlayer => next_state.set(AppState::SinglePlayer),
         MenuAction::CreateCharacter => {
-            // A fresh character each time New Character is chosen.
-            commands.insert_resource(crate::character_host::CharacterHost::default());
+            // A fresh character each time New Character is chosen, here and on the host.
+            let rules = creation.as_ref().map(|d| d.rules.clone()).unwrap_or_default();
+            match host.as_mut() {
+                Some(host) => host.reset(&rules),
+                None => commands.insert_resource(crate::character_host::CharacterHost::new(&rules)),
+            }
             next_state.set(AppState::CreateCharacter);
         }
         MenuAction::Cancel => next_state.set(AppState::MainMenu),

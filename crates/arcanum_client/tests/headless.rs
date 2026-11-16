@@ -291,8 +291,24 @@ fn menu_app(vfs: Vfs) -> App {
         .init_resource::<ButtonInput<KeyCode>>()
         .init_resource::<GameSettings>()
         .add_plugins((TimePlugin, BitmapTextPlugin, FontsPlugin, MenuAudioPlugin, MainMenuPlugin, OptionsPlugin, ScreensPlugin, LoadingPlugin, LoadGamePlugin, NewGamePlugin, arcanum_client::CreateCharacterPlugin, arcanum_client::CharacterEditorPlugin))
-        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(100)));
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(100)))
+        .add_plugins(arcanum_client::sim_bridge::SimBridgePlugin);
+    app.world_mut().non_send_mut::<arcanum_client::sim_bridge::LocalHostRes>().0.sim.use_manual_clock();
     app
+}
+
+/// The character the in-process host holds for the local player once it has accepted one.
+fn host_accepted(app: &mut App) -> Option<arcanum_rules::CharacterBlueprint> {
+    use arcanum_sim::{Session, SessionPlayer};
+    // One frame for the host to tick, one for its answer to arrive.
+    app.update();
+    app.update();
+    assert!(app.world().resource::<arcanum_client::character_host::CharacterHost>().accepted, "the host accepted");
+    let host = app.world().non_send::<arcanum_client::sim_bridge::LocalHostRes>();
+    match host.0.sim.app.world().resource::<Session>().players.get(&arcanum_client::sim_bridge::LOCAL_PLAYER) {
+        Some(SessionPlayer::Ready(b)) => Some(b.clone()),
+        _ => None,
+    }
 }
 
 fn run_until_menu_ready(app: &mut App) {
@@ -2021,6 +2037,8 @@ fn the_picker_cycles_through_the_characters_and_shows_them() {
     let finished = host.finished.as_ref().expect("Next finishes the character");
     assert_eq!((finished.prototype, finished.sheet.name.as_str()), (Some(16094), "Lugard"));
     assert_eq!(state(&app), AppState::Loading);
+    let on_host = host_accepted(&mut app).expect("the host holds the pre-made");
+    assert_eq!((on_host.prototype, on_host.sheet.name.as_str()), (Some(16094), "Lugard"));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2188,6 +2206,7 @@ fn character_creation_builds_a_character() {
     assert_eq!((made.sheet.name.as_str(), made.sheet.race, made.sheet.background, made.prototype), ("Virgil", 1, 1, None));
     assert_eq!(made.sheet.base[0], 9, "the strength point bought in the editor, accepted");
     assert_eq!(state(&app), AppState::Loading);
+    assert_eq!(host_accepted(&mut app), Some(made), "the host made the same character");
 }
 
 fn editor_text(app: &mut App, which: arcanum_client::character_editor::EditorText) -> String {

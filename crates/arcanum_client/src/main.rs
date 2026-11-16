@@ -64,7 +64,9 @@ fn main() {
             MainMenuPlugin,
             OptionsPlugin,
             ScreensPlugin,
-        ));
+        ))
+        // The single-player host, in this process.
+        .add_plugins(arcanum_client::sim_bridge::SimBridgePlugin);
 
     // Debugging aid: `DEBUG_ARCANUM_SCREEN=options|singleplayer|newgamechoice|newgame|createcharacter|charactereditor|loadgame|loading` opens that screen.
     let start = match std::env::var(SCREEN_VAR).unwrap_or_default().to_ascii_lowercase().as_str() {

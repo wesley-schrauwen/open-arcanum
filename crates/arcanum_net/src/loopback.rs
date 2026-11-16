@@ -74,21 +74,24 @@ impl ClientTransport for LoopbackClient {
 
 #[cfg(test)]
 mod tests {
-    use arcanum_rules::{CharacterAction, CharacterSheet};
+    use arcanum_rules::CharacterAction;
+    use arcanum_sim::{CharacterRequest, Creation};
 
     use super::*;
+
+    fn character(seq: u32, request: CharacterRequest) -> PlayerIntent {
+        PlayerIntent::Character { seq, request }
+    }
 
     #[test]
     fn intent_reaches_the_host_tagged_with_the_player() {
         let host = LoopbackHost::new();
         let client = host.connect(PlayerId(7));
-        client.send_intent(PlayerIntent::CharacterAction(CharacterAction::SetName("Virgil".into()))).unwrap();
-        client.send_intent(PlayerIntent::AcceptCharacter).unwrap();
+        let name = character(1, CharacterRequest::Action(CharacterAction::SetName("Virgil".into())));
+        client.send_intent(name.clone()).unwrap();
+        client.send_intent(character(2, CharacterRequest::Accept)).unwrap();
         let got = host.recv_intents();
-        assert_eq!(got.len(), 2);
-        assert_eq!(got[0].0, PlayerId(7));
-        assert!(matches!(&got[0].1, PlayerIntent::CharacterAction(CharacterAction::SetName(n)) if n == "Virgil"));
-        assert!(matches!(got[1].1, PlayerIntent::AcceptCharacter));
+        assert_eq!(got, vec![(PlayerId(7), name), (PlayerId(7), character(2, CharacterRequest::Accept))]);
         assert!(host.recv_intents().is_empty(), "drained");
     }
 
@@ -97,7 +100,7 @@ mod tests {
         let host = LoopbackHost::new();
         let a = host.connect(PlayerId(1));
         let b = host.connect(PlayerId(2));
-        let delta = LedgerDelta::CharacterUpdate { player: PlayerId(1), sheet: CharacterSheet::default() };
+        let delta = LedgerDelta::CharacterUpdate { player: PlayerId(1), ack: 1, creation: Creation::default() };
         host.send_delta(PlayerId(1), delta.clone()).unwrap();
         assert_eq!(a.recv_deltas(), vec![delta]);
         assert!(b.recv_deltas().is_empty());
@@ -117,6 +120,6 @@ mod tests {
         let client = host.connect(PlayerId(1));
         drop(host);
         // The client holds a sender clone, but the receiver went with the host.
-        assert_eq!(client.send_intent(PlayerIntent::AcceptCharacter).unwrap_err(), TransportError::Disconnected);
+        assert_eq!(client.send_intent(character(1, CharacterRequest::Accept)).unwrap_err(), TransportError::Disconnected);
     }
 }

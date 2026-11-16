@@ -9,14 +9,18 @@
 //! [`PlayerIntent`]s and sends [`LedgerDelta`]s. The client never changes shared state
 //! directly.
 
+pub mod creation;
 pub mod delta;
 pub mod intent;
 pub mod net_id;
 pub mod player;
 pub mod plugin;
+pub mod session;
 
+pub use creation::*;
 pub use delta::*;
 pub use intent::*;
 pub use net_id::*;
 pub use player::*;
 pub use plugin::*;
+pub use session::*;

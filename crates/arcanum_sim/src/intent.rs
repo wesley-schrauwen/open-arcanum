@@ -1,19 +1,19 @@
 //! What a player asks the host to do.
 //!
 //! The client builds a [`PlayerIntent`] and sends it through the transport. The host validates
-//! it, applies it and sends back one or more [`LedgerDelta`]s.
+//! it, applies it and sends back one or more [`LedgerDelta`](crate::LedgerDelta)s.
 
 use arcanum_formats::map::TileLoc;
-use arcanum_rules::CharacterAction;
 use serde::{Deserialize, Serialize};
 
+use crate::CharacterRequest;
+
 /// A player's request to the host.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlayerIntent {
-    /// A character-creation or level-up action, applied with `arcanum_rules`.
-    CharacterAction(CharacterAction),
-    /// Accept the finished character and start the game.
-    AcceptCharacter,
+    /// A character creation request. `seq` counts up per client; the host echoes the last one
+    /// it applied so the client can replay the requests still in flight on top.
+    Character { seq: u32, request: CharacterRequest },
     /// Move the player's PC to a tile.
     MoveTo(TileLoc),
 }

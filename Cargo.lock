@@ -286,7 +286,9 @@ name = "arcanum_client"
 version = "0.1.0"
 dependencies = [
  "arcanum_formats",
+ "arcanum_net",
  "arcanum_rules",
+ "arcanum_sim",
  "arcanum_vfs",
  "bevy",
  "dirs",

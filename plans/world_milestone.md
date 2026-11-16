@@ -156,9 +156,8 @@ The crates follow step 2, with these differences:
 - **Deltas are not yet stamped with a tick.** `LedgerDelta::Tick(n)` marks the end of a host tick
   instead. Stamping every delta (an envelope with the tick, for `last_confirmed_tick`) is still
   owed and fits best with `UdpTransport` in step 8, where ordering and duplicates arise.
-- **"Done when" is half met.** A test sends intents through the loopback and the host receives
-  them; nothing answers them yet. The host system that applies intents and replies with deltas
-  comes with the session (character creation through the host), the next PR.
+- **"Done when" was half met** in the step 2 PR (intents arrived; nothing answered). The
+  session below completes it.
 - **No snapshot delta.** `WorldSave` arrives in step 3; the snapshot variant comes with it.
   `Spawn` carries an `EntityKind` and a position.
 - **No separate pre-made intent.** `CharacterAction::PickPremade` already covers it.
@@ -167,6 +166,40 @@ The crates follow step 2, with these differences:
 - **`arcanum_rules` has an optional `serde` feature** for the sheet and actions, as
   `arcanum_formats` has for `TileLoc`. `arcanum_net` has no serde yet; the loopback passes
   values, not bytes.
+
+## Character creation through the host (first part of step 3)
+
+The in-process host now owns the character; the screens are unchanged.
+
+- **Shared creation code.** `arcanum_sim::Creation` (sheet plus the picked pre-made) is what the
+  client's `CharacterHost` used to hold. Host and client both run it, the host to decide and
+  the client to preview.
+- **Numbered requests.** `PlayerIntent::Character { seq, request }` carries `New`, an `Action`
+  or `Accept`. The host answers every one with `CharacterUpdate { ack, creation }`, refused or
+  not, and an accepted character with `CharacterAccepted`. The client shows its own preview at
+  once; on an answer it takes the host's copy and replays the requests numbered after `ack`.
+  Refusals are found by the preview, so they are not sent.
+- **Session.** The host's `Session` holds each player as `Creating(Creation)` or
+  `Ready(CharacterBlueprint)`. A `Ready` player can only send `New`. `InWorld` waits for the PC
+  entity (step 4).
+- **No transport in `arcanum_sim`.** The host reads an `Inbox` and writes an `Outbox`;
+  `arcanum_net::LocalHost` moves them to and from a loopback transport. The client keeps the
+  `LocalHost` as a non-send resource (it holds a Bevy `App`) and updates it in `PostUpdate`
+  (`sim_bridge.rs`).
+
+Not done, or done differently from the plan:
+
+- **The screens move on at once.** Next on the editor or the picker goes to loading on the
+  preview's say-so; the client records `CharacterAccepted` (`CharacterHost::accepted`) but
+  nothing waits for it. Once the host boots the world (the rest of step 3), loading should
+  wait for acceptance.
+- **The player id is fixed** (`LOCAL_PLAYER`, 1). The random id saved in the player's config
+  comes with joining (step 8).
+- **The host starts with default rules** and takes the game's when `CreationData` loads (on
+  entering character creation or the picker). A New Character chosen before then is made with
+  default rules on both sides, as before this change.
+- **The host is created when the app starts**, not on entering New Game; it is idle until
+  intents arrive.
 
 ## Builder's calls (proposed by Claude, not owner decisions)
 

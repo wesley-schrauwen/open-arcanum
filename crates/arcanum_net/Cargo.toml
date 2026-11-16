@@ -7,8 +7,6 @@ license = "MIT"
 # Transport layer between the host (arcanum_sim) and clients. Swappable:
 # LoopbackTransport for single player, UdpTransport for LAN, Steam later.
 [dependencies]
+arcanum_rules = { path = "../arcanum_rules" }
 arcanum_sim = { path = "../arcanum_sim" }
 crossbeam-channel = "0.5"
-
-[dev-dependencies]
-arcanum_rules = { path = "../arcanum_rules" }

@@ -103,6 +103,7 @@ impl Plugin for NewGamePlugin {
             app.add_plugins(MenuWindowPlugin);
         }
         app.init_resource::<PickerIndex>()
+            .init_resource::<CharacterHost>()
             .add_systems(Startup, |mut commands: Commands, assets: Res<AssetServer>| {
                 commands.insert_resource(NewGameArt {
                     background: assets.load(interface::PREGEN_BACK),
@@ -239,6 +240,7 @@ fn on_activate(
     premades: Option<Res<PremadeCharacters>>,
     data: Option<Res<crate::create_character::CreationData>>,
     sounds: Option<Res<MenuSounds>>,
+    mut host: ResMut<CharacterHost>,
 ) {
     let Ok(&action) = actions.get(activate.entity) else { return };
     if let Some(sounds) = &sounds {
@@ -254,13 +256,12 @@ fn on_activate(
             let Some(p) = premades.as_ref().and_then(|p| p.0.get(index.0)) else { return };
             // The host takes the pre-made from its own rules data, built from the same prototype.
             let rules = data.as_ref().map(|d| d.rules.clone()).unwrap_or_default();
-            let mut host = CharacterHost::new(&rules);
+            host.reset(&rules);
             let picked = host.apply(&rules, CharacterAction::PickPremade(p.prototype)).and_then(|()| host.finish(&rules).map(|_| ()));
             if let Err(e) = picked {
                 warn!("pre-made character {} cannot be picked: {e:?}", p.prototype);
                 return;
             }
-            commands.insert_resource(host);
             commands.insert_resource(LoadRequest::new(AppState::InGame));
             next_state.set(AppState::Loading);
         }
