@@ -1,0 +1,22 @@
+[package]
+name = "arcanum_sim"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# The authoritative game simulation (host). Uses bevy_ecs for its own headless
+# World; no rendering, audio or windowing. The client and host share
+# arcanum_rules for character maths and arcanum_formats for data readers.
+[dependencies]
+arcanum_vfs = { path = "../arcanum_vfs" }
+arcanum_formats = { path = "../arcanum_formats", features = ["serde"] }
+arcanum_rules = { path = "../arcanum_rules", features = ["serde"] }
+bevy_app = "0.20"
+bevy_ecs = "0.20"
+bevy_time = "0.20"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+arcanum_vfs = { path = "../arcanum_vfs", features = ["test-util"] }
+arcanum_formats = { path = "../arcanum_formats", features = ["test-util"] }
+serde_json = "1"

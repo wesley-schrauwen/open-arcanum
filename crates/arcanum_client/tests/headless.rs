@@ -5,19 +5,36 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use arcanum_client::audio::{MENU_MUSIC_VOLUME, MenuMusic, MenuSounds};
-use arcanum_client::fonts::ArcanumFonts;
+use arcanum_client::audio::{MENU_MUSIC_VOLUME, MenuMusic, MenuSounds, SoundEffect, VoiceLine, play_voice};
+use arcanum_client::config::{self, ConfigPlugin};
+use arcanum_client::settings::EnvOverrides;
+use arcanum_client::bitmap_text::{BitmapFontAsset, BitmapText, BitmapTextRendered, compose_rgba};
+use arcanum_client::fonts::{ArcanumFonts, ORIGINAL_SCALE};
 use arcanum_client::main_menu::{
-    HOVER_COLOR, MENU_ENTRY_IDS, MenuAction, MenuLabel, OnMainMenu, TEXT_COLOR, menu_ready,
+    DISABLED_COLOR, HOVER_COLOR, MENU_ENTRY_IDS, MenuAction, MenuLabel, OnMainMenu, TEXT_COLOR, menu_ready,
+};
+use arcanum_client::options::{
+    CurrentTab, KEEP_RESOLUTION_TITLE, OptionId, OptionSlot, OptionValue, OptionsAction, OptionsScreen, OptionsTab, ResolutionConfirm,
+    ResolutionCountdown, ResolutionDialog, SliderFill,
+};
+use arcanum_client::loading::{LoadRequest, LoadingIndicator, LoadingPicture, LoadingProgress, LoadingScreen, MIN_LOADING_SECS};
+use arcanum_client::LoadingPlugin;
+use arcanum_client::LoadGamePlugin;
+use arcanum_client::NewGamePlugin;
+use arcanum_client::new_game::{NewGameAction, NewGameScreen};
+use arcanum_client::load_game::{
+    HoverHelpText, LoadGameAction, LoadGameScreen, LoadGameState, NO_SAVES, SaveGames, SaveInfo, SaveRow, sample_saves,
 };
 use arcanum_client::screens::{PlaceholderScreen, RETURN_HINT};
+use arcanum_client::widgets::{FrameButton, Selected};
 use arcanum_client::resource_pack::paths;
 use arcanum_client::settings::BASELINE_HEIGHT;
 use arcanum_client::{
-    AppState, ArcanumAssetsPlugin, DisplayPlugin, DisplayResolution, FontsPlugin, GameSettings, MainMenuPlugin,
+    AppState, ArcanumAssetsPlugin, ArtFrames, BitmapTextPlugin, DisplayPlugin, OptionsPlugin, DisplayResolution, FontsPlugin, GameSettings, MainMenuPlugin,
     MenuAudioPlugin, MesAsset, ScreensPlugin, VfsAssetPlugin, VfsAssetReader,
 };
-use arcanum_formats::test_util::{ArtBuilder, TestFrame, ramp_palette};
+use arcanum_formats::font::BitmapFont;
+use arcanum_formats::test_util::{ArtBuilder, TestFrame, font_art, ramp_palette};
 use arcanum_vfs::Vfs;
 use arcanum_vfs::test_util::DatBuilder;
 use bevy::app::TaskPoolPlugin;
@@ -25,8 +42,11 @@ use bevy::asset::io::{AssetReader, AssetReaderError, Reader};
 use bevy::asset::{AssetPlugin, LoadState};
 use bevy::audio::{AudioSource, PlaybackMode, Volume};
 use bevy::camera::ScalingMode;
+use bevy::ecs::system::RunSystemOnce;
 use bevy::picking::hover::Hovered;
 use bevy::state::app::StatesPlugin;
+use bevy::time::{TimePlugin, TimeUpdateStrategy};
+use bevy::ui::Pressed;
 use bevy::text::FontSource;
 use bevy::ui_widgets::{Activate, ActivateOnPress, Button};
 use bevy::image::Image;
@@ -39,7 +59,7 @@ use bevy::window::{MonitorSelection, WindowMode, WindowResolution};
 // ---------------------------------------------------------------------------------------------
 // Fixtures
 
-const MENU_MES: &[u8] = b"// test menu\r\n{10}{Play}\r\n{11}{Online}\r\n{12}{Settings}\r\n{13}{Thanks}\r\n{14}{Quit}\r\n";
+const MENU_MES: &[u8] = b"// test menu\r\n{10}{Solo}\r\n{11}{Online}\r\n{12}{Settings}\r\n{13}{Thanks}\r\n{14}{Quit}\r\n{34}{Onward}{50}{Begin}{51}{Resume}{52}{Latest}{53}{Movie}{54}{Back}{420}{Premade}{421}{Custom}{422}{Return}\r\n{4000}{Gameplay}{4001}{Picture}{4002}{Audio}{4003}{Finished}\r\n";
 
 /// An 8x6 static sprite whose pixel at index `i` uses palette index `i % 256`.
 fn menu_art_indices() -> Vec<u8> {
@@ -230,7 +250,7 @@ fn mes_loads_as_an_asset() {
     let (handle, state) = load::<MesAsset>(&mut app, "MES/mainmenu.MES");
     assert!(matches!(state, LoadState::Loaded));
     let mes = app.world().resource::<Assets<MesAsset>>().get(&handle).unwrap();
-    assert_eq!(mes.get(10), Some("Play"));
+    assert_eq!(mes.get(10), Some("Solo"));
     assert_eq!(mes.get(14), Some("Quit"));
 }
 
@@ -269,7 +289,9 @@ fn menu_app(vfs: Vfs) -> App {
         .init_asset::<AudioSource>()
         .init_asset::<Font>()
         .init_resource::<ButtonInput<KeyCode>>()
-        .add_plugins((FontsPlugin, MenuAudioPlugin, MainMenuPlugin, ScreensPlugin));
+        .init_resource::<GameSettings>()
+        .add_plugins((TimePlugin, BitmapTextPlugin, FontsPlugin, MenuAudioPlugin, MainMenuPlugin, OptionsPlugin, ScreensPlugin, LoadingPlugin, LoadGamePlugin, NewGamePlugin, arcanum_client::CreateCharacterPlugin, arcanum_client::CharacterEditorPlugin))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(100)));
     app
 }
 
@@ -282,9 +304,14 @@ fn run_until_menu_ready(app: &mut App) {
 /// Label ids in on-screen order, read from the UI hierarchy.
 fn label_order(app: &mut App) -> Vec<(u32, String)> {
     let world = app.world_mut();
-    let mut labels = world.query::<(Entity, &MenuLabel, &Text, &ChildOf)>();
-    let entries: Vec<(Entity, u32, String, Entity)> =
-        labels.iter(world).map(|(e, l, t, parent)| (e, l.0, t.0.clone(), parent.parent())).collect();
+    let mut labels = world.query::<(Entity, &MenuLabel, Option<&Text>, Option<&BitmapText>, &ChildOf)>();
+    let entries: Vec<(Entity, u32, String, Entity)> = labels
+        .iter(world)
+        .map(|(e, l, t, b, parent)| {
+            let text = t.map(|t| t.0.clone()).or_else(|| b.map(|b| b.text.clone())).unwrap();
+            (e, l.0, text, parent.parent())
+        })
+        .collect();
     if entries.is_empty() {
         return Vec::new();
     }
@@ -325,7 +352,7 @@ fn main_menu_spawns_camera_background_and_labels() {
     // Labels: one per entry, in id order, text from the .mes file.
     let expected: Vec<(u32, String)> = MENU_ENTRY_IDS
         .into_iter()
-        .zip(["Play", "Online", "Settings", "Thanks", "Quit"])
+        .zip(["Play", "Settings", "Thanks", "Quit"])
         .map(|(id, t)| (id, t.to_string()))
         .collect();
     assert_eq!(label_order(&mut app), expected);
@@ -346,7 +373,7 @@ fn main_menu_skips_missing_messages() {
     let fx = Fixture::with_archive(
         DatBuilder::new()
             .raw(paths::backgrounds::MAIN_MENU, &menu_art())
-            .raw(paths::text::MAIN_MENU, b"{10}{Play}{14}{Quit}"),
+            .raw(paths::text::MAIN_MENU, b"{10}{Solo}{14}{Quit}"),
     );
     let mut app = menu_app(fx.vfs());
     run_until_menu_ready(&mut app);
@@ -373,7 +400,7 @@ fn main_menu_survives_missing_background() {
     let fx = Fixture::with_archive(DatBuilder::new().raw(paths::text::MAIN_MENU, MENU_MES));
     let mut app = menu_app(fx.vfs());
     update_until(&mut app, |app| !label_order(app).is_empty());
-    assert_eq!(label_order(&mut app).len(), 5);
+    assert_eq!(label_order(&mut app).len(), 4);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -397,7 +424,7 @@ fn ui_scale(app: &App) -> f32 {
 }
 
 fn settings(resolution: DisplayResolution, fullscreen: bool) -> GameSettings {
-    GameSettings { resolution, fullscreen }
+    GameSettings { resolution, fullscreen, ..default() }
 }
 
 #[test]
@@ -508,14 +535,19 @@ fn display_plugin_without_a_window_does_nothing() {
 // ---------------------------------------------------------------------------------------------
 // Menu interaction, screens, audio and fonts
 
-/// Menu buttons in on-screen order.
+/// Menu buttons (the text entities) in on-screen order.
 fn buttons(app: &mut App) -> Vec<(Entity, MenuAction)> {
     let world = app.world_mut();
     let Some(column) = world.query_filtered::<Entity, With<OnMainMenu>>().iter(world).next() else {
         return Vec::new();
     };
     let rows = world.get::<Children>(column).unwrap().to_vec();
-    rows.into_iter().map(|row| (row, *world.get::<MenuAction>(row).unwrap())).collect()
+    rows.into_iter()
+        .map(|row| {
+            let label = world.get::<Children>(row).unwrap()[0];
+            (label, *world.get::<MenuAction>(label).unwrap())
+        })
+        .collect()
 }
 
 fn button_for(app: &mut App, action: MenuAction) -> Entity {
@@ -523,9 +555,7 @@ fn button_for(app: &mut App, action: MenuAction) -> Entity {
 }
 
 fn label_color(app: &mut App, button: Entity) -> Color {
-    let world = app.world();
-    let label = world.get::<Children>(button).unwrap()[0];
-    world.get::<TextColor>(label).unwrap().0
+    app.world().get::<TextColor>(button).unwrap().0
 }
 
 fn state(app: &App) -> AppState {
@@ -562,6 +592,8 @@ fn texts_under<T: Component>(app: &mut App) -> Vec<String> {
         for child in world.get::<Children>(root).map(|c| c.to_vec()).unwrap_or_default() {
             if let Some(text) = world.get::<Text>(child) {
                 out.push(text.0.clone());
+            } else if let Some(text) = world.get::<BitmapText>(child) {
+                out.push(text.text.clone());
             }
         }
     }
@@ -574,10 +606,15 @@ fn menu_entries_are_buttons_in_order() {
     let actions: Vec<MenuAction> = buttons(&mut app).into_iter().map(|(_, a)| a).collect();
     assert_eq!(
         actions,
-        [MenuAction::SinglePlayer, MenuAction::MultiPlayer, MenuAction::Options, MenuAction::Credits, MenuAction::ExitGame]
+        [MenuAction::SinglePlayer, MenuAction::Options, MenuAction::Credits, MenuAction::ExitGame]
     );
     for (button, _) in buttons(&mut app) {
         let world = app.world();
+        // The hit area is the text: the button carries the text and is not the full-width row.
+        assert!(world.get::<MenuLabel>(button).is_some());
+        assert!(world.get::<Text>(button).is_some() || world.get::<BitmapText>(button).is_some());
+        let row = world.get::<ChildOf>(button).unwrap().parent();
+        assert!(world.get::<Button>(row).is_none() && world.get::<Hovered>(row).is_none());
         assert!(world.get::<Button>(button).is_some());
         assert!(world.get::<ActivateOnPress>(button).is_some());
         assert!(world.get::<Hovered>(button).is_some());
@@ -604,11 +641,7 @@ fn hovering_highlights_only_that_entry() {
 #[test]
 fn entries_open_their_screen_and_escape_returns() {
     let mut app = ready_menu(&Fixture::new());
-    for (action, target, title) in [
-        (MenuAction::SinglePlayer, AppState::SinglePlayer, "Play"),
-        (MenuAction::Options, AppState::Options, "Settings"),
-        (MenuAction::Credits, AppState::Credits, "Thanks"),
-    ] {
+    for (action, target, title) in [(MenuAction::Credits, AppState::Credits, "Thanks")] {
         activate(&mut app, action);
         assert_eq!(state(&app), target);
         // The main menu's buttons are gone; the placeholder shows its title from MainMenu.mes.
@@ -622,7 +655,7 @@ fn entries_open_their_screen_and_escape_returns() {
         press_escape(&mut app);
         assert_eq!(state(&app), AppState::MainMenu);
         assert!(texts_under::<PlaceholderScreen>(&mut app).is_empty());
-        assert_eq!(label_order(&mut app).len(), 5, "menu rebuilt after {action:?}");
+        assert_eq!(label_order(&mut app).len(), 4, "menu rebuilt after {action:?}");
     }
 }
 
@@ -631,7 +664,7 @@ fn escape_on_the_main_menu_does_nothing() {
     let mut app = ready_menu(&Fixture::new());
     press_escape(&mut app);
     assert_eq!(state(&app), AppState::MainMenu);
-    assert_eq!(buttons(&mut app).len(), 5);
+    assert_eq!(buttons(&mut app).len(), 4);
 }
 
 #[test]
@@ -643,13 +676,182 @@ fn exit_game_requests_app_exit() {
 }
 
 #[test]
-fn multiplayer_stays_on_the_menu() {
+fn there_is_no_multiplayer_entry() {
     let mut app = ready_menu(&Fixture::new());
-    activate(&mut app, MenuAction::MultiPlayer);
+    let texts: Vec<String> = label_order(&mut app).into_iter().map(|(_, t)| t).collect();
+    assert!(!texts.iter().any(|t| t == "Online"), "{texts:?}");
+    assert!(!label_order(&mut app).iter().any(|(id, _)| *id == 11));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Single Player menu
+
+fn open_single_player(fx: &Fixture) -> App {
+    let mut app = ready_menu(fx);
+    activate(&mut app, MenuAction::SinglePlayer);
+    app.update();
+    app
+}
+
+#[test]
+fn single_player_shows_its_menu_on_the_same_panel() {
+    let mut app = open_single_player(&Fixture::new());
+    assert_eq!(state(&app), AppState::SinglePlayer);
+    assert_eq!(
+        label_order(&mut app),
+        [(50, "Begin"), (51, "Resume"), (34, "Onward"), (11, "Multiplayer"), (54, "Back")]
+            .map(|(id, t)| (id, t.to_string())),
+        "Multiplayer sits below Continue, with our label rather than the game's \"Online\""
+    );
+    let actions: Vec<MenuAction> = buttons(&mut app).into_iter().map(|(_, a)| a).collect();
+    assert_eq!(
+        actions,
+        [MenuAction::NewGame, MenuAction::LoadGame, MenuAction::Continue, MenuAction::Multiplayer, MenuAction::Cancel]
+    );
+    // The background stays; the main menu entries are gone.
+    let world = app.world_mut();
+    assert_eq!(world.query::<&Sprite>().iter(world).count(), 1);
+    assert!(!label_order(&mut app).iter().any(|(id, _)| *id == 10));
+    // View Intro and Last Save are not offered.
+    let texts: Vec<String> = label_order(&mut app).into_iter().map(|(_, t)| t).collect();
+    assert!(!texts.iter().any(|t| t == "Movie" || t == "Latest"), "{texts:?}");
+}
+
+#[test]
+fn unbuilt_single_player_entries_are_dimmed_and_inert() {
+    let mut app = open_single_player(&Fixture::new());
+    for (button, action) in buttons(&mut app) {
+        let world = app.world();
+        if action.is_available() {
+            assert!(world.get::<Button>(button).is_some(), "{action:?}");
+            assert_eq!(label_color(&mut app, button), TEXT_COLOR, "{action:?}");
+        } else {
+            assert!(world.get::<Button>(button).is_none(), "{action:?}");
+            assert!(world.get::<Hovered>(button).is_none(), "{action:?}: no hover highlight or sound");
+            assert_eq!(label_color(&mut app, button), DISABLED_COLOR, "{action:?}");
+        }
+    }
+    let available: Vec<MenuAction> =
+        buttons(&mut app).into_iter().map(|(_, a)| a).filter(|a| a.is_available()).collect();
+    assert_eq!(available, [MenuAction::NewGame, MenuAction::LoadGame, MenuAction::Cancel]);
+
+    // Even if triggered, Continue does nothing.
+    activate(&mut app, MenuAction::Continue);
+    app.update();
+    assert_eq!(state(&app), AppState::SinglePlayer);
+}
+
+#[test]
+fn cancel_and_escape_return_to_the_main_menu() {
+    let mut app = open_single_player(&Fixture::new());
+    activate(&mut app, MenuAction::Cancel);
     app.update();
     assert_eq!(state(&app), AppState::MainMenu);
-    assert_eq!(buttons(&mut app).len(), 5);
-    assert!(app.should_exit().is_none());
+    assert_eq!(label_order(&mut app).len(), 4);
+
+    activate(&mut app, MenuAction::SinglePlayer);
+    app.update();
+    press_escape(&mut app);
+    assert_eq!(state(&app), AppState::MainMenu);
+    assert_eq!(label_order(&mut app).len(), 4);
+}
+
+#[test]
+fn new_game_goes_through_the_loading_screen_into_the_world() {
+    let mut app = ready_menu(&Fixture::new());
+    with_pickable_premades(&mut app);
+    activate(&mut app, MenuAction::SinglePlayer);
+    app.update();
+    activate(&mut app, MenuAction::NewGame);
+    app.update();
+    activate(&mut app, MenuAction::PickCharacter);
+    app.update();
+    assert_eq!(state(&app), AppState::NewGame);
+    press_new_game(&mut app, NewGameAction::Next);
+    assert_eq!(state(&app), AppState::Loading);
+    assert!(buttons(&mut app).is_empty());
+    let world = app.world_mut();
+    assert_eq!(world.query::<&LoadingScreen>().iter(world).count(), 1);
+    let picture = world.query::<&LoadingPicture>().single(world).unwrap().0;
+    assert!(picture < paths::backgrounds::LOADING.len());
+    assert_eq!(world.query::<&LoadingIndicator>().iter(world).count(), 1);
+
+    // Escape cannot leave the loading screen.
+    press_escape(&mut app);
+    assert_eq!(state(&app), AppState::Loading);
+
+    // Nothing to load: it stays up for the minimum time, then the world placeholder follows.
+    update_until(&mut app, |app| state(app) == AppState::InGame);
+    let world = app.world_mut();
+    assert_eq!(world.query::<&LoadingScreen>().iter(world).count(), 0, "loading screen removed");
+    assert!(world.get_resource::<LoadRequest>().is_none());
+    assert_eq!(texts_under::<PlaceholderScreen>(&mut app), ["The world goes here", RETURN_HINT]);
+
+    press_escape(&mut app);
+    assert_eq!(state(&app), AppState::MainMenu);
+    assert_eq!(label_order(&mut app).len(), 4);
+}
+
+/// Opens the loading screen with `request`, from a ready main menu.
+fn start_loading(fx: &Fixture, request: LoadRequest) -> App {
+    let mut app = ready_menu(fx);
+    app.insert_resource(request);
+    app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Loading);
+    app.update();
+    app.update();
+    app
+}
+
+#[test]
+fn loading_waits_for_its_assets_and_the_minimum_time() {
+    let fx = Fixture::with_archive(
+        DatBuilder::new()
+            .raw(paths::backgrounds::MAIN_MENU, &menu_art())
+            .raw(paths::text::MAIN_MENU, MENU_MES)
+            .raw("art/big.art", &ArtBuilder::single(TestFrame::raw(2, 2, &[1, 1, 1, 1])).build()),
+    );
+    let mut app = ready_menu(&fx);
+    let handle: Handle<Image> = app.world().resource::<AssetServer>().load("art/big.art");
+    app.insert_resource(LoadRequest::new(AppState::Credits).with(handle.clone()));
+    app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Loading);
+    app.update();
+    assert_eq!(state(&app), AppState::Loading);
+    update_until(&mut app, |app| app.world().resource::<LoadingProgress>().done == 1);
+    let progress = *app.world().resource::<LoadingProgress>();
+    assert_eq!((progress.total, progress.fraction()), (1, 1.0));
+    if progress.elapsed < MIN_LOADING_SECS - 0.2 {
+        assert_eq!(state(&app), AppState::Loading, "loaded, but not shown long enough yet");
+    }
+    update_until(&mut app, |app| state(app) == AppState::Credits);
+    assert!(app.world().get_resource::<LoadingProgress>().is_none());
+}
+
+#[test]
+fn a_failed_asset_does_not_block_loading() {
+    let mut app = ready_menu(&Fixture::new());
+    let missing: Handle<Image> = app.world().resource::<AssetServer>().load("art/missing.art");
+    app.insert_resource(LoadRequest::new(AppState::Credits).with(missing).min_secs(0.0));
+    app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Loading);
+    app.update();
+    update_until(&mut app, |app| state(app) == AppState::Credits);
+}
+
+#[test]
+fn loading_without_a_request_returns_to_the_menu() {
+    let mut app = ready_menu(&Fixture::new());
+    app.world_mut().resource_mut::<NextState<AppState>>().set(AppState::Loading);
+    app.update();
+    assert_eq!(state(&app), AppState::Loading);
+    update_until(&mut app, |app| state(app) == AppState::MainMenu);
+}
+
+#[test]
+fn a_long_minimum_keeps_the_loading_screen_up() {
+    let mut app = start_loading(&Fixture::new(), LoadRequest::new(AppState::Credits).min_secs(60.0));
+    for _ in 0..100 {
+        app.update();
+    }
+    assert_eq!(state(&app), AppState::Loading, "10 s in, 60 s minimum");
 }
 
 /// Entities playing `handle` once and despawning afterwards.
@@ -717,8 +919,8 @@ fn missing_sounds_are_skipped() {
     let world = app.world_mut();
     assert_eq!(world.query::<&AudioPlayer>().iter(world).count(), 0);
     // Buttons still work without sound.
-    activate(&mut app, MenuAction::Options);
-    assert_eq!(state(&app), AppState::Options);
+    activate(&mut app, MenuAction::Credits);
+    assert_eq!(state(&app), AppState::Credits);
 }
 
 fn label_fonts(app: &mut App) -> Vec<FontSource> {
@@ -733,7 +935,7 @@ fn override_font_is_used_for_labels() {
     let mut app = ready_menu(&fx);
     let serif = app.world().resource::<ArcanumFonts>().serif.clone().expect("font handle");
     let fonts = label_fonts(&mut app);
-    assert_eq!(fonts.len(), 5);
+    assert_eq!(fonts.len(), 4);
     assert!(fonts.iter().all(|f| matches!(f, FontSource::Handle(h) if *h == serif)));
 }
 
@@ -742,4 +944,1295 @@ fn without_a_font_labels_use_the_default() {
     let mut app = ready_menu(&Fixture::new());
     assert!(app.world().resource::<ArcanumFonts>().serif.is_none());
     assert!(label_fonts(&mut app).iter().all(|f| *f == FontSource::default()));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bitmap fonts
+
+const LARGE_LINE: u32 = 6;
+const SMALL_LINE: u32 = 3;
+
+fn fixture_with_fonts() -> Fixture {
+    Fixture::with_archive(
+        DatBuilder::new()
+            .zlib(paths::backgrounds::MAIN_MENU, &menu_art())
+            .raw(paths::text::MAIN_MENU, MENU_MES)
+            .raw(paths::fonts::LARGE, &font_art(LARGE_LINE))
+            .raw(paths::fonts::SMALL, &font_art(SMALL_LINE)),
+    )
+}
+
+/// Waits until every `BitmapText` has been rasterised.
+fn run_until_text_rendered(app: &mut App) {
+    update_until(app, |app| {
+        let world = app.world_mut();
+        let pending = world.query_filtered::<(), (With<BitmapText>, Without<BitmapTextRendered>)>().iter(world).count();
+        let done = world.query_filtered::<(), With<BitmapTextRendered>>().iter(world).count();
+        pending == 0 && done > 0
+    });
+}
+
+fn button_label(app: &mut App, action: MenuAction) -> Entity {
+    // The button is the text entity.
+    button_for(app, action)
+}
+
+#[test]
+fn menu_labels_use_the_game_bitmap_font() {
+    let mut app = ready_menu(&fixture_with_fonts());
+    run_until_text_rendered(&mut app);
+    let reference = BitmapFont::parse(&font_art(LARGE_LINE)).unwrap();
+
+    for (id, text) in label_order(&mut app) {
+        let world = app.world_mut();
+        let (label, bitmap) = world
+            .query::<(Entity, &MenuLabel, &BitmapText)>()
+            .iter(world)
+            .find(|(_, l, _)| l.0 == id)
+            .map(|(e, _, b)| (e, b.clone()))
+            .unwrap();
+        assert_eq!(bitmap.text, text);
+        assert_eq!(bitmap.scale, ORIGINAL_SCALE);
+        assert!(world.get::<Text>(label).is_none(), "no plain text when the bitmap font is present");
+
+        // Sized to the rendered text plus its one-pixel shadow, at the original scale.
+        assert!(bitmap.shadow);
+        let rendered = reference.render(&text);
+        let (w, h, expected) = compose_rgba(&rendered, true);
+        assert_eq!((w, h), (rendered.width + 1, LARGE_LINE + 1));
+        let node = world.get::<Node>(label).unwrap();
+        assert_eq!(node.width, Val::Px(w as f32 * ORIGINAL_SCALE));
+        assert_eq!(node.height, Val::Px(h as f32 * ORIGINAL_SCALE));
+
+        // The image is the composed text and shadow, tinted with the text colour.
+        let image_node = world.get::<ImageNode>(label).unwrap();
+        assert_eq!(image_node.color, TEXT_COLOR);
+        let image = world.resource::<Assets<Image>>().get(&image_node.image).unwrap();
+        assert_eq!((image.width(), image.height()), (w, h));
+        assert_eq!(image.data.as_deref(), Some(expected.as_slice()));
+        // The bottom row is shadow only: black, partly transparent.
+        let bottom = &expected[((h - 1) * w + 1) as usize * 4..][..4];
+        assert_eq!(&bottom[..3], [0, 0, 0]);
+        assert!(bottom[3] > 0);
+    }
+}
+
+#[test]
+fn hover_retints_bitmap_text() {
+    let mut app = ready_menu(&fixture_with_fonts());
+    run_until_text_rendered(&mut app);
+    let credits = button_for(&mut app, MenuAction::Credits);
+    let label = button_label(&mut app, MenuAction::Credits);
+    let image_before = app.world().get::<ImageNode>(label).unwrap().image.clone();
+
+    app.world_mut().entity_mut(credits).insert(Hovered(true));
+    app.update();
+    let image_node = app.world().get::<ImageNode>(label).unwrap();
+    assert_eq!(image_node.color, HOVER_COLOR);
+    assert_eq!(image_node.image, image_before, "hover only retints, it does not re-render");
+
+    app.world_mut().entity_mut(credits).insert(Hovered(false));
+    app.update();
+    assert_eq!(app.world().get::<ImageNode>(label).unwrap().color, TEXT_COLOR);
+}
+
+#[test]
+fn placeholder_screens_use_large_and_small_bitmap_fonts() {
+    let mut app = ready_menu(&fixture_with_fonts());
+    activate(&mut app, MenuAction::Credits);
+    run_until_text_rendered(&mut app);
+    let fonts = app.world().resource::<ArcanumFonts>().clone();
+    let world = app.world_mut();
+    let screen = world.query_filtered::<Entity, With<PlaceholderScreen>>().single(world).unwrap();
+    let children = world.get::<Children>(screen).unwrap().to_vec();
+    let used: Vec<(String, Handle<BitmapFontAsset>)> =
+        children.iter().map(|c| world.get::<BitmapText>(*c).map(|b| (b.text.clone(), b.font.clone())).unwrap()).collect();
+    assert_eq!(used[0], ("Thanks".to_string(), fonts.large.unwrap()));
+    assert_eq!(used[1], (RETURN_HINT.to_string(), fonts.small.unwrap()));
+    let hint_node = world.get::<Node>(children[1]).unwrap();
+    assert_eq!(hint_node.height, Val::Px((SMALL_LINE + 1) as f32 * ORIGINAL_SCALE));
+}
+
+#[test]
+fn override_ttf_takes_priority_over_bitmap_fonts() {
+    let fx = fixture_with_fonts();
+    fx.override_file(paths::fonts::SERIF, b"font bytes are not parsed in tests");
+    let mut app = ready_menu(&fx);
+    for _ in 0..5 {
+        app.update();
+    }
+    let world = app.world_mut();
+    assert_eq!(world.query_filtered::<(), (With<MenuLabel>, With<Text>)>().iter(world).count(), 4);
+    assert_eq!(world.query_filtered::<(), With<BitmapText>>().iter(world).count(), 0);
+}
+
+#[test]
+fn broken_bitmap_font_falls_back_to_plain_text() {
+    let fx = Fixture::with_archive(
+        DatBuilder::new()
+            .raw(paths::backgrounds::MAIN_MENU, &menu_art())
+            .raw(paths::text::MAIN_MENU, MENU_MES)
+            .raw(paths::fonts::LARGE, b"not a font")
+            .raw(paths::fonts::SMALL, &font_art(SMALL_LINE)),
+    );
+    let mut app = ready_menu(&fx);
+    update_until(&mut app, |app| {
+        let world = app.world_mut();
+        world.query_filtered::<(), (With<MenuLabel>, With<Text>)>().iter(world).count() == 4
+    });
+    let world = app.world_mut();
+    assert_eq!(world.query_filtered::<(), (With<MenuLabel>, With<BitmapText>)>().iter(world).count(), 0);
+    // The words survive the fallback.
+    assert_eq!(label_order(&mut app).iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>(), ["Play", "Settings", "Thanks", "Quit"]);
+}
+
+#[test]
+fn changing_bitmap_text_rerenders_and_empty_text_has_no_image() {
+    let mut app = ready_menu(&fixture_with_fonts());
+    run_until_text_rendered(&mut app);
+    let label = button_label(&mut app, MenuAction::Options);
+    let reference = BitmapFont::parse(&font_art(LARGE_LINE)).unwrap();
+
+    app.world_mut().get_mut::<BitmapText>(label).unwrap().text = "Longer text here".into();
+    app.update();
+    let node = app.world().get::<Node>(label).unwrap();
+    assert_eq!(node.width, Val::Px((reference.measure("Longer text here") + 1) as f32 * ORIGINAL_SCALE));
+
+    app.world_mut().get_mut::<BitmapText>(label).unwrap().text = String::new();
+    app.update();
+    assert!(app.world().get::<ImageNode>(label).is_none());
+    assert_eq!(app.world().get::<Node>(label).unwrap().width, Val::Px(0.0));
+}
+
+#[test]
+fn art_paths_still_load_as_images_alongside_the_font_loader() {
+    // Both loaders claim `.art`; the requested asset type decides.
+    let mut app = menu_app(fixture_with_fonts().vfs());
+    let (image, state) = load::<Image>(&mut app, paths::fonts::LARGE);
+    assert!(matches!(state, LoadState::Loaded));
+    assert!(app.world().resource::<Assets<Image>>().get(&image).is_some());
+    let (font, state) = load::<BitmapFontAsset>(&mut app, paths::backgrounds::MAIN_MENU);
+    assert!(matches!(state, LoadState::Failed(_)), "the menu background is not a font");
+    let _ = font;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Options screen
+
+const OPTIONS_UI_MES: &[u8] = b"{100}{Campaign}{102}{Gore Off}{104}{Autofight}{105}{Weapon Swap}{106}{Run}{107}{Helpers}\
+{200}{Gamma}{201}{Text Time}{202}{Floaties}{203}{Float Pace}{204}{Taunts}{300}{FX}{301}{Speech}{302}{Tunes}";
+
+fn options_fixture() -> Fixture {
+    let arrow = {
+        let mut b = ArtBuilder::single(TestFrame::raw(2, 2, &[1, 1, 1, 1]));
+        b.rotations[0].push(TestFrame::raw(2, 2, &[2, 2, 2, 2]));
+        b.rotations[0].push(TestFrame::raw(2, 2, &[3, 3, 3, 3]));
+        b.build()
+    };
+    let plain = ArtBuilder::single(TestFrame::raw(2, 2, &[5, 5, 5, 5])).build();
+    Fixture::with_archive(
+        DatBuilder::new()
+            .raw(paths::backgrounds::MAIN_MENU, &menu_art())
+            .raw(paths::text::MAIN_MENU, MENU_MES)
+            .raw(paths::text::OPTIONS_UI, OPTIONS_UI_MES)
+            .raw(paths::text::OPTIONS_OFF_ON, b"{0}{No}{1}{Yes}")
+            .raw(paths::text::OPTIONS_FLOATS, b"{0}{None}{1}{Some}{2}{All}")
+            .raw(paths::interface::OPTIONS_BACK, &plain)
+            .raw(paths::interface::OPTION_SLIDER, &plain)
+            .raw(paths::interface::OPTION_CHOICE, &plain)
+            .raw(paths::interface::ARROW_LEFT, &arrow)
+            .raw(paths::interface::ARROW_RIGHT, &arrow),
+    )
+}
+
+fn settings_of(app: &App) -> GameSettings {
+    app.world().resource::<GameSettings>().clone()
+}
+
+/// Opens Options from the main menu and waits for the screen to be built.
+fn open_options(fx: &Fixture) -> App {
+    let mut app = ready_menu(fx);
+    activate(&mut app, MenuAction::Options);
+    assert_eq!(state(&app), AppState::Options);
+    update_until(&mut app, |app| {
+        let world = app.world_mut();
+        world.query_filtered::<(), With<OptionSlot>>().iter(world).count() > 0
+    });
+    app
+}
+
+fn options_button(app: &mut App, action: OptionsAction) -> Entity {
+    let world = app.world_mut();
+    world.query::<(Entity, &OptionsAction)>().iter(world).find(|(_, a)| **a == action).map(|(e, _)| e).unwrap_or_else(|| panic!("no button for {action:?}"))
+}
+
+fn press(app: &mut App, action: OptionsAction) {
+    let entity = options_button(app, action);
+    app.world_mut().trigger(Activate { entity });
+    app.update();
+    app.update(); // let a tab rebuild or state change apply
+}
+
+/// Text under `entity` (itself or its descendants), in hierarchy order.
+fn texts_in(app: &mut App, entity: Entity) -> Vec<String> {
+    let world = app.world();
+    let mut out = Vec::new();
+    let mut stack = vec![entity];
+    while let Some(e) = stack.pop() {
+        if let Some(t) = world.get::<Text>(e) {
+            out.push(t.0.clone());
+        } else if let Some(b) = world.get::<BitmapText>(e) {
+            out.push(b.text.clone());
+        }
+        if let Some(children) = world.get::<Children>(e) {
+            stack.extend(children.iter().rev());
+        }
+    }
+    out
+}
+
+/// Slots in on-screen order with their text: [name, value] for choices, [name] for sliders.
+fn slots(app: &mut App) -> Vec<(OptionId, Vec<String>)> {
+    let world = app.world_mut();
+    let screen = world.query_filtered::<Entity, With<OptionsScreen>>().single(world).unwrap();
+    let children = world.get::<Children>(screen).unwrap().to_vec();
+    let slot_entities: Vec<(Entity, OptionId)> =
+        children.into_iter().filter_map(|c| world.get::<OptionSlot>(c).map(|s| (c, s.0))).collect();
+    slot_entities.into_iter().map(|(e, id)| (id, texts_in(app, e))).collect()
+}
+
+fn value_text(app: &mut App, option: OptionId) -> String {
+    let world = app.world_mut();
+    let entity = world.query::<(Entity, &OptionValue)>().iter(world).find(|(_, v)| v.0 == option).unwrap().0;
+    texts_in(app, entity).remove(0)
+}
+
+fn title(app: &mut App) -> String {
+    let world = app.world_mut();
+    let screen = world.query_filtered::<Entity, With<OptionsScreen>>().single(world).unwrap();
+    texts_in(app, screen).remove(0)
+}
+
+#[test]
+fn options_opens_on_the_game_tab_with_game_text() {
+    let mut app = open_options(&options_fixture());
+    assert_eq!(title(&mut app), "Gameplay");
+    assert_eq!(
+        slots(&mut app),
+        vec![
+            (OptionId::AutoAttack, vec!["Autofight".into(), "No".into()]),
+            (OptionId::CombatTaunts, vec!["Taunts".into(), "Yes".into()]),
+        ]
+    );
+    // Tabs and Done from MainMenu.mes; the current tab is marked.
+    for (action, label) in [
+        (OptionsAction::Tab(OptionsTab::Game), "Gameplay"),
+        (OptionsAction::Tab(OptionsTab::Video), "Picture"),
+        (OptionsAction::Tab(OptionsTab::Sound), "Audio"),
+        (OptionsAction::Done, "Finished"),
+    ] {
+        let e = options_button(&mut app, action);
+        assert_eq!(texts_in(&mut app, e), [label]);
+    }
+    let game_tab = options_button(&mut app, OptionsAction::Tab(OptionsTab::Game));
+    assert!(app.world().get::<Selected>(game_tab).is_some());
+}
+
+#[test]
+fn tabs_switch_the_settings_shown() {
+    let mut app = open_options(&options_fixture());
+    press(&mut app, OptionsAction::Tab(OptionsTab::Video));
+    assert_eq!(app.world().resource::<CurrentTab>().0, OptionsTab::Video);
+    assert_eq!(title(&mut app), "Picture");
+    let ids: Vec<OptionId> = slots(&mut app).into_iter().map(|(id, _)| id).collect();
+    assert_eq!(ids, OptionsTab::Video.options());
+    let video = options_button(&mut app, OptionsAction::Tab(OptionsTab::Video));
+    let game = options_button(&mut app, OptionsAction::Tab(OptionsTab::Game));
+    assert!(app.world().get::<Selected>(video).is_some());
+    assert!(app.world().get::<Selected>(game).is_none());
+    assert_eq!(value_text(&mut app, OptionId::Resolution), "1920 x 1080");
+    assert_eq!(value_text(&mut app, OptionId::Floats), "Some");
+
+    press(&mut app, OptionsAction::Tab(OptionsTab::Sound));
+    assert_eq!(
+        slots(&mut app),
+        vec![
+            (OptionId::Effects, vec!["FX".into()]),
+            (OptionId::Voice, vec!["Speech".into()]),
+            (OptionId::Music, vec!["Tunes".into()]),
+        ]
+    );
+}
+
+#[test]
+fn removed_settings_are_not_offered() {
+    let mut app = open_options(&options_fixture());
+    for tab in OptionsTab::ALL {
+        press(&mut app, OptionsAction::Tab(tab));
+        let texts: Vec<String> = slots(&mut app).into_iter().flat_map(|(_, t)| t).collect();
+        // Difficulty and combat mode were never offered; Module ("Campaign"), Violence Filter
+        // ("Gore Off"), Follower Skills ("Helpers"), Auto Switch Weapons ("Weapon Swap") and
+        // Always Run ("Run") were removed, and Control Followers with them.
+        for removed in ["Difficulty", "Combat Mode", "Campaign", "Gore Off", "Helpers", "Weapon Swap", "Run", "Control Followers"] {
+            assert!(!texts.iter().any(|t| t.contains(removed)), "{tab:?}: {texts:?}");
+        }
+    }
+}
+
+#[test]
+fn arrows_commit_changes_immediately() {
+    let mut app = open_options(&options_fixture());
+    press(&mut app, OptionsAction::Step { option: OptionId::AutoAttack, delta: 1 });
+    assert!(settings_of(&app).auto_attack);
+    assert_eq!(value_text(&mut app, OptionId::AutoAttack), "Yes");
+
+    press(&mut app, OptionsAction::Step { option: OptionId::CombatTaunts, delta: -1 });
+    assert!(!settings_of(&app).combat_taunts);
+    assert_eq!(value_text(&mut app, OptionId::CombatTaunts), "No");
+
+    press(&mut app, OptionsAction::Tab(OptionsTab::Sound));
+    let fill_width = |app: &mut App| {
+        let world = app.world_mut();
+        world.query::<(&SliderFill, &Node)>().iter(world).find(|(f, _)| f.0 == OptionId::Music).map(|(_, n)| n.width).unwrap()
+    };
+    let full = fill_width(&mut app);
+    press(&mut app, OptionsAction::Step { option: OptionId::Music, delta: -1 });
+    assert_eq!(settings_of(&app).music_volume, 0.9);
+    let (Val::Px(full), Val::Px(less)) = (full, fill_width(&mut app)) else { panic!("pixel widths") };
+    assert!((less / full - 0.9).abs() < 1e-4, "fill tracks the value: {less} of {full}");
+
+    // Changes survive leaving the screen.
+    press(&mut app, OptionsAction::Done);
+    assert_eq!(state(&app), AppState::MainMenu);
+    let s = settings_of(&app);
+    assert!(s.auto_attack);
+    assert_eq!(s.music_volume, 0.9);
+}
+
+#[test]
+fn escape_leaves_options_keeping_changes() {
+    let mut app = open_options(&options_fixture());
+    press(&mut app, OptionsAction::Step { option: OptionId::AutoAttack, delta: 1 });
+    press_escape(&mut app);
+    assert_eq!(state(&app), AppState::MainMenu);
+    assert!(settings_of(&app).auto_attack);
+    let world = app.world_mut();
+    assert_eq!(world.query_filtered::<(), With<OptionsScreen>>().iter(world).count(), 0);
+}
+
+#[test]
+fn options_reopen_on_the_game_tab() {
+    let mut app = open_options(&options_fixture());
+    press(&mut app, OptionsAction::Tab(OptionsTab::Sound));
+    press(&mut app, OptionsAction::Done);
+    activate(&mut app, MenuAction::Options);
+    app.update();
+    assert_eq!(title(&mut app), "Gameplay");
+}
+
+fn dialog_count(app: &mut App) -> usize {
+    let world = app.world_mut();
+    world.query_filtered::<(), With<ResolutionDialog>>().iter(world).count()
+}
+
+/// Picks the next resolution with the arrow and presses Done.
+fn change_resolution(app: &mut App) {
+    press(app, OptionsAction::Tab(OptionsTab::Video));
+    press(app, OptionsAction::Step { option: OptionId::Resolution, delta: 1 });
+    press(app, OptionsAction::Done);
+}
+
+#[test]
+fn resolution_arrows_only_pick_until_done() {
+    let mut app = open_options(&options_fixture());
+    press(&mut app, OptionsAction::Tab(OptionsTab::Video));
+    press(&mut app, OptionsAction::Step { option: OptionId::Resolution, delta: 1 });
+    press(&mut app, OptionsAction::Step { option: OptionId::Resolution, delta: 1 });
+    assert_eq!(value_text(&mut app, OptionId::Resolution), "2560 x 1600", "the slot shows the choice");
+    assert_eq!(settings_of(&app).resolution, DisplayResolution::Fhd, "but nothing is applied");
+    assert_eq!(dialog_count(&mut app), 0);
+    // Choices survive switching tabs.
+    press(&mut app, OptionsAction::Tab(OptionsTab::Game));
+    press(&mut app, OptionsAction::Tab(OptionsTab::Video));
+    assert_eq!(value_text(&mut app, OptionId::Resolution), "2560 x 1600");
+}
+
+#[test]
+fn there_is_no_update_button() {
+    let mut app = open_options(&options_fixture());
+    press(&mut app, OptionsAction::Tab(OptionsTab::Video));
+    let world = app.world_mut();
+    let labels: Vec<Entity> = world.query_filtered::<Entity, With<OptionsAction>>().iter(world).collect();
+    for e in labels {
+        assert!(!texts_in(&mut app, e).iter().any(|t| t == "Update"));
+    }
+}
+
+#[test]
+fn done_without_a_new_resolution_leaves_at_once() {
+    let mut app = open_options(&options_fixture());
+    press(&mut app, OptionsAction::Tab(OptionsTab::Video));
+    // Away and back to the current resolution: nothing to confirm.
+    press(&mut app, OptionsAction::Step { option: OptionId::Resolution, delta: 1 });
+    press(&mut app, OptionsAction::Step { option: OptionId::Resolution, delta: -1 });
+    press(&mut app, OptionsAction::Done);
+    assert_eq!(dialog_count(&mut app), 0);
+    assert_eq!(state(&app), AppState::MainMenu);
+}
+
+#[test]
+fn done_applies_the_resolution_and_asks_before_leaving() {
+    let mut app = open_options(&options_fixture());
+    change_resolution(&mut app);
+    assert_eq!(settings_of(&app).resolution, DisplayResolution::Qhd, "applied straight away");
+    assert_eq!(dialog_count(&mut app), 1);
+    assert_eq!(state(&app), AppState::Options, "still on Options until answered");
+    assert_eq!(app.world().resource::<ResolutionConfirm>().previous, DisplayResolution::Fhd);
+    let world = app.world_mut();
+    let title = world.query_filtered::<Entity, With<ResolutionDialog>>().single(world).unwrap();
+    let texts = texts_in(&mut app, title);
+    assert!(texts.iter().any(|t| t == KEEP_RESOLUTION_TITLE), "{texts:?}");
+    assert_eq!(KEEP_RESOLUTION_TITLE, "Confirm Resolution");
+
+    press(&mut app, OptionsAction::KeepResolution);
+    assert_eq!(settings_of(&app).resolution, DisplayResolution::Qhd);
+    assert_eq!(dialog_count(&mut app), 0);
+    assert!(app.world().get_resource::<ResolutionConfirm>().is_none());
+    assert_eq!(state(&app), AppState::MainMenu);
+}
+
+#[test]
+fn revert_restores_the_previous_resolution_and_leaves() {
+    let mut app = open_options(&options_fixture());
+    change_resolution(&mut app);
+    press(&mut app, OptionsAction::RevertResolution);
+    assert_eq!(settings_of(&app).resolution, DisplayResolution::Fhd);
+    assert_eq!(dialog_count(&mut app), 0);
+    assert_eq!(state(&app), AppState::MainMenu);
+    // The discarded pick is gone next time.
+    activate(&mut app, MenuAction::Options);
+    app.update();
+    press(&mut app, OptionsAction::Tab(OptionsTab::Video));
+    assert_eq!(value_text(&mut app, OptionId::Resolution), "1920 x 1080");
+}
+
+#[test]
+fn the_screen_is_locked_while_confirming() {
+    let mut app = open_options(&options_fixture());
+    change_resolution(&mut app);
+    press(&mut app, OptionsAction::Step { option: OptionId::Brightness, delta: 1 });
+    press(&mut app, OptionsAction::Tab(OptionsTab::Sound));
+    assert_eq!(settings_of(&app).brightness, 0.5);
+    assert_eq!(app.world().resource::<CurrentTab>().0, OptionsTab::Video);
+    assert_eq!(dialog_count(&mut app), 1);
+}
+
+#[test]
+fn unconfirmed_resolution_reverts_after_fifteen_seconds() {
+    let mut app = open_options(&options_fixture());
+    change_resolution(&mut app);
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs(1)));
+    let countdown = |app: &mut App| {
+        let world = app.world_mut();
+        let e = world.query_filtered::<Entity, With<ResolutionCountdown>>().single(world).unwrap();
+        texts_in(app, e).remove(0)
+    };
+    for _ in 0..10 {
+        app.update();
+    }
+    assert_eq!(settings_of(&app).resolution, DisplayResolution::Qhd, "still waiting after 10 s");
+    assert_eq!(countdown(&mut app), "Reverting in 5 seconds");
+    for _ in 0..6 {
+        app.update();
+    }
+    assert_eq!(settings_of(&app).resolution, DisplayResolution::Fhd);
+    assert_eq!(dialog_count(&mut app), 0);
+    assert_eq!(state(&app), AppState::MainMenu);
+}
+
+#[test]
+fn escape_confirms_like_done_and_reverts_in_the_dialog() {
+    let mut app = open_options(&options_fixture());
+    press(&mut app, OptionsAction::Tab(OptionsTab::Video));
+    press(&mut app, OptionsAction::Step { option: OptionId::Resolution, delta: 1 });
+    press_escape(&mut app);
+    assert_eq!(dialog_count(&mut app), 1, "Escape asks too");
+    assert_eq!(state(&app), AppState::Options);
+    press_escape(&mut app);
+    assert_eq!(settings_of(&app).resolution, DisplayResolution::Fhd);
+    assert_eq!(dialog_count(&mut app), 0);
+    assert_eq!(state(&app), AppState::MainMenu);
+}
+
+#[test]
+fn only_resolution_asks_for_confirmation() {
+    let mut app = open_options(&options_fixture());
+    press(&mut app, OptionsAction::Tab(OptionsTab::Video));
+    press(&mut app, OptionsAction::Step { option: OptionId::Fullscreen, delta: 1 });
+    press(&mut app, OptionsAction::Step { option: OptionId::Brightness, delta: 1 });
+    assert!(settings_of(&app).fullscreen);
+    assert_eq!(settings_of(&app).brightness, 0.6);
+    assert_eq!(dialog_count(&mut app), 0);
+}
+
+#[test]
+fn arrow_buttons_show_hover_and_pressed_frames() {
+    let mut app = open_options(&options_fixture());
+    let arrow = options_button(&mut app, OptionsAction::Step { option: OptionId::AutoAttack, delta: 1 });
+    let frames_handle = app.world().get::<FrameButton>(arrow).unwrap().frames.clone();
+    update_until(&mut app, |app| app.world().resource::<Assets<ArtFrames>>().get(&frames_handle).is_some());
+    app.update();
+    let frames = app.world().resource::<Assets<ArtFrames>>().get(&frames_handle).unwrap().frames.clone();
+    let shown = |app: &App| app.world().get::<ImageNode>(arrow).unwrap().image.clone();
+    assert_eq!(shown(&app), frames[0]);
+    app.world_mut().entity_mut(arrow).insert(Hovered(true));
+    app.update();
+    assert_eq!(shown(&app), frames[2]);
+    app.world_mut().entity_mut(arrow).insert(Pressed);
+    app.update();
+    assert_eq!(shown(&app), frames[1]);
+    app.world_mut().entity_mut(arrow).remove::<Pressed>().insert(Hovered(false));
+    app.update();
+    assert_eq!(shown(&app), frames[0]);
+}
+
+#[test]
+fn arrows_use_the_button_sound_and_text_buttons_the_menu_click() {
+    let fx = options_fixture();
+    for path in [paths::sound::MENU_CLICK, paths::sound::BUTTON_PRESS, paths::sound::BUTTON_RELEASE] {
+        fx.override_file(path, b"x");
+    }
+    let mut app = open_options(&fx);
+    let sounds = app.world().resource::<MenuSounds>().clone();
+    let (click, button) = (sounds.click.unwrap(), sounds.button_press.unwrap());
+    assert!(sounds.button_release.is_some());
+    let (clicks, buttons) = (one_shots(&mut app, &click), one_shots(&mut app, &button));
+
+    press(&mut app, OptionsAction::Step { option: OptionId::AutoAttack, delta: 1 });
+    assert_eq!(one_shots(&mut app, &button), buttons + 1, "arrow: the button press sound");
+    assert_eq!(one_shots(&mut app, &click), clicks, "arrow: not the menu click");
+
+    press(&mut app, OptionsAction::Tab(OptionsTab::Sound));
+    assert_eq!(one_shots(&mut app, &click), clicks + 1, "tab: menu click");
+    assert_eq!(one_shots(&mut app, &button), buttons + 1);
+}
+
+#[test]
+fn missing_option_text_falls_back_to_english() {
+    let fx = Fixture::with_archive(
+        DatBuilder::new().raw(paths::backgrounds::MAIN_MENU, &menu_art()).raw(paths::text::MAIN_MENU, b"{10}{Play}{12}{Settings}"),
+    );
+    let mut app = open_options(&fx);
+    assert_eq!(title(&mut app), "Game");
+    let first = slots(&mut app).remove(0);
+    assert_eq!(first, (OptionId::AutoAttack, vec!["Auto Attack".into(), "Off".into()]));
+    let done = options_button(&mut app, OptionsAction::Done);
+    assert_eq!(texts_in(&mut app, done), ["Done"]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Saved settings
+
+/// Opens Options with settings saved to `path`, as the game does at boot.
+fn open_options_saving_to(path: &Path) -> App {
+    let mut app = open_options(&options_fixture());
+    let (settings, file) = config::load(Some(path.to_path_buf()), EnvOverrides::default());
+    app.insert_resource(settings).insert_resource(file).add_plugins(ConfigPlugin);
+    app
+}
+
+fn saved(path: &Path) -> GameSettings {
+    config::parse(&std::fs::read_to_string(path).unwrap(), "test")
+}
+
+#[test]
+fn leaving_options_saves_the_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cfg").join("config.toml");
+    let mut app = open_options_saving_to(&path);
+    press(&mut app, OptionsAction::Step { option: OptionId::AutoAttack, delta: 1 });
+    press(&mut app, OptionsAction::Tab(OptionsTab::Sound));
+    press(&mut app, OptionsAction::Step { option: OptionId::Music, delta: -1 });
+    assert!(!path.exists(), "nothing is written while the screen is open");
+
+    press(&mut app, OptionsAction::Done);
+    app.update();
+    assert_eq!(state(&app), AppState::MainMenu);
+    let s = saved(&path);
+    assert!(s.auto_attack);
+    assert_eq!(s.music_volume, 0.9);
+
+    // The next boot starts from the saved file.
+    let (booted, _) = config::load(Some(path.clone()), EnvOverrides::default());
+    assert_eq!(booted, s);
+}
+
+#[test]
+fn leaving_without_changes_still_writes_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut app = open_options_saving_to(&path);
+    press_escape(&mut app);
+    assert_eq!(saved(&path), GameSettings::default());
+}
+
+#[test]
+fn only_a_confirmed_resolution_is_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+
+    let mut app = open_options_saving_to(&path);
+    change_resolution(&mut app);
+    assert!(!path.exists(), "not saved while the confirmation is up");
+    press(&mut app, OptionsAction::RevertResolution);
+    app.update();
+    assert_eq!(saved(&path).resolution, DisplayResolution::Fhd);
+
+    let mut app = open_options_saving_to(&path);
+    change_resolution(&mut app);
+    press(&mut app, OptionsAction::KeepResolution);
+    app.update();
+    assert_eq!(saved(&path).resolution, DisplayResolution::Qhd);
+}
+
+#[test]
+fn menu_music_follows_the_music_setting() {
+    let fx = fixture_with_sounds();
+    let mut app = menu_app(fx.vfs());
+    app.insert_resource(GameSettings { music_volume: 0.2, ..default() });
+    run_until_menu_ready(&mut app);
+    let volume = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&PlaybackSettings, With<MenuMusic>>().single(world).unwrap().volume
+    };
+    assert_eq!(volume(&mut app), Volume::Linear(MENU_MUSIC_VOLUME * 0.2), "starts at the saved level");
+
+    app.world_mut().resource_mut::<GameSettings>().music_volume = 0.6;
+    app.update();
+    assert_eq!(volume(&mut app), Volume::Linear(MENU_MUSIC_VOLUME * 0.6), "changes apply at once");
+    app.world_mut().resource_mut::<GameSettings>().music_volume = 0.0;
+    app.update();
+    assert_eq!(volume(&mut app), Volume::Linear(0.0));
+}
+
+#[test]
+fn effects_and_voice_follow_their_settings() {
+    let fx = fixture_with_sounds();
+    let mut app = menu_app(fx.vfs());
+    app.insert_resource(GameSettings { effects_volume: 0.4, voice_volume: 0.3, ..default() });
+    run_until_menu_ready(&mut app);
+    let volumes = |app: &mut App, effect: bool| -> Vec<Volume> {
+        let world = app.world_mut();
+        if effect {
+            world.query_filtered::<&PlaybackSettings, With<SoundEffect>>().iter(world).map(|p| p.volume).collect()
+        } else {
+            world.query_filtered::<&PlaybackSettings, With<VoiceLine>>().iter(world).map(|p| p.volume).collect()
+        }
+    };
+
+    // Interface sounds start at the Effects level.
+    let credits = button_for(&mut app, MenuAction::Credits);
+    app.world_mut().entity_mut(credits).insert(Hovered(true));
+    app.update();
+    assert_eq!(volumes(&mut app, true), [Volume::Linear(0.4)]);
+
+    // Voice lines start at the Voice level.
+    let line = app.world().resource::<MenuSounds>().click.clone().unwrap();
+    let settings = app.world().resource::<GameSettings>().clone();
+    app.world_mut().run_system_once(move |mut commands: Commands| {
+        play_voice(&mut commands, &settings, line.clone());
+    }).unwrap();
+    assert_eq!(volumes(&mut app, false), [Volume::Linear(0.3)]);
+
+    // Changes reach sounds that are already queued or playing, and new ones.
+    {
+        let mut s = app.world_mut().resource_mut::<GameSettings>();
+        s.effects_volume = 0.9;
+        s.voice_volume = 0.1;
+    }
+    app.update();
+    assert_eq!(volumes(&mut app, true), [Volume::Linear(0.9)]);
+    assert_eq!(volumes(&mut app, false), [Volume::Linear(0.1)]);
+    assert_eq!(app.world().resource::<MenuSounds>().volume, Volume::Linear(0.9));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Load Game screen
+
+fn open_load_game(saves: SaveGames) -> App {
+    let mut app = open_single_player(&Fixture::new());
+    app.insert_resource(saves);
+    activate(&mut app, MenuAction::LoadGame);
+    app.update();
+    app.update();
+    app
+}
+
+fn load_game_button(app: &mut App, action: LoadGameAction) -> Entity {
+    let world = app.world_mut();
+    world.query::<(Entity, &LoadGameAction)>().iter(world).find(|(_, a)| **a == action).map(|(e, _)| e).unwrap()
+}
+
+fn press_load_game(app: &mut App, action: LoadGameAction) {
+    let entity = load_game_button(app, action);
+    app.world_mut().trigger(Activate { entity });
+    app.update();
+    app.update();
+}
+
+fn save_rows(app: &mut App) -> Vec<String> {
+    let world = app.world_mut();
+    let mut rows: Vec<(usize, Entity)> = world.query::<(Entity, &SaveRow)>().iter(world).map(|(e, r)| (r.0, e)).collect();
+    rows.sort();
+    rows.into_iter().map(|(_, e)| texts_in(app, e).remove(0)).collect()
+}
+
+#[test]
+fn load_game_opens_from_the_single_player_menu_and_goes_back() {
+    let mut app = open_load_game(SaveGames::default());
+    assert_eq!(state(&app), AppState::LoadGame);
+    let world = app.world_mut();
+    assert_eq!(world.query::<&LoadGameScreen>().iter(world).count(), 1);
+    for action in [LoadGameAction::Back, LoadGameAction::Load, LoadGameAction::Delete, LoadGameAction::ToggleInfo] {
+        load_game_button(&mut app, action);
+    }
+
+    press_load_game(&mut app, LoadGameAction::Back);
+    assert_eq!(state(&app), AppState::SinglePlayer);
+    activate(&mut app, MenuAction::LoadGame);
+    app.update();
+    press_escape(&mut app);
+    assert_eq!(state(&app), AppState::SinglePlayer, "Escape also goes back one level");
+}
+
+#[test]
+fn without_saves_the_list_says_so_and_load_does_nothing() {
+    let mut app = open_load_game(SaveGames::default());
+    let world = app.world_mut();
+    let screen = world.query_filtered::<Entity, With<LoadGameScreen>>().single(world).unwrap();
+    assert!(texts_in(&mut app, screen).iter().any(|t| t == NO_SAVES));
+    assert!(save_rows(&mut app).is_empty());
+    press_load_game(&mut app, LoadGameAction::Load);
+    press_load_game(&mut app, LoadGameAction::Delete);
+    assert_eq!(state(&app), AppState::LoadGame);
+}
+
+#[test]
+fn saves_are_listed_and_can_be_selected_inspected_and_deleted() {
+    let mut app = open_load_game(sample_saves());
+    assert_eq!(save_rows(&mut app), ["Before the bridge", "Shrouded Hills", "Crash site"]);
+    assert_eq!(app.world().resource::<LoadGameState>().selected, Some(0), "newest selected");
+
+    press_load_game(&mut app, LoadGameAction::Select(1));
+    assert_eq!(app.world().resource::<LoadGameState>().selected, Some(1));
+    let selected_row = {
+        let world = app.world_mut();
+        world.query::<(Entity, &SaveRow)>().iter(world).find(|(_, r)| r.0 == 1).unwrap().0
+    };
+    assert_eq!(app.world().get::<TextColor>(selected_row).unwrap().0, HOVER_COLOR);
+
+    // Info display: off until toggled.
+    let info_count = |app: &mut App| {
+        let world = app.world_mut();
+        world.query::<&SaveInfo>().iter(world).count()
+    };
+    assert_eq!(info_count(&mut app), 0);
+    press_load_game(&mut app, LoadGameAction::ToggleInfo);
+    let info = {
+        let world = app.world_mut();
+        world.query_filtered::<Entity, With<SaveInfo>>().single(world).unwrap()
+    };
+    assert_eq!(texts_in(&mut app, info), ["Shrouded Hills", "Level 3", "Shrouded Hills", "12 Nov 2026 21:05"]);
+    press_load_game(&mut app, LoadGameAction::ToggleInfo);
+    assert_eq!(info_count(&mut app), 0);
+
+    press_load_game(&mut app, LoadGameAction::Delete);
+    assert_eq!(save_rows(&mut app), ["Before the bridge", "Crash site"]);
+    assert_eq!(app.world().resource::<LoadGameState>().selected, Some(1), "the next save is selected");
+}
+
+#[test]
+fn load_goes_through_the_loading_screen() {
+    let mut app = open_load_game(sample_saves());
+    press_load_game(&mut app, LoadGameAction::Load);
+    assert_eq!(state(&app), AppState::Loading);
+    update_until(&mut app, |app| state(app) == AppState::InGame);
+}
+
+#[test]
+fn hovering_a_button_shows_its_help_in_the_bottom_bar() {
+    let mut app = open_load_game(SaveGames::default());
+    let help = |app: &mut App| {
+        let world = app.world_mut();
+        let e = world.query_filtered::<Entity, With<HoverHelpText>>().single(world).unwrap();
+        texts_in(app, e).remove(0)
+    };
+    assert_eq!(help(&mut app), "");
+    let delete = load_game_button(&mut app, LoadGameAction::Delete);
+    app.world_mut().entity_mut(delete).insert(Hovered(true));
+    app.update();
+    assert_eq!(help(&mut app), "Delete Save Game");
+    app.world_mut().entity_mut(delete).insert(Hovered(false));
+    app.update();
+    assert_eq!(help(&mut app), "");
+}
+
+// ---------------------------------------------------------------------------------------------
+// New Game screen
+
+fn press_new_game(app: &mut App, action: NewGameAction) {
+    let entity = {
+        let world = app.world_mut();
+        world.query::<(Entity, &NewGameAction)>().iter(world).find(|(_, a)| **a == action).map(|(e, _)| e).unwrap()
+    };
+    app.world_mut().trigger(Activate { entity });
+    app.update();
+    app.update();
+}
+
+#[test]
+fn new_game_shows_its_screen_and_goes_back() {
+    let mut app = open_new_game_picker(&Fixture::new());
+    let world = app.world_mut();
+    assert_eq!(world.query::<&NewGameScreen>().iter(world).count(), 1);
+    assert_eq!(world.query::<&NewGameAction>().iter(world).count(), 4, "Back, Next and the two character arrows");
+    // The shared frame's hover help works here too.
+    let next = {
+        let world = app.world_mut();
+        world.query::<(Entity, &NewGameAction)>().iter(world).find(|(_, a)| **a == NewGameAction::Next).unwrap().0
+    };
+    app.world_mut().entity_mut(next).insert(Hovered(true));
+    app.update();
+    let help = {
+        let world = app.world_mut();
+        world.query_filtered::<Entity, With<HoverHelpText>>().single(world).unwrap()
+    };
+    assert_eq!(texts_in(&mut app, help), ["Next Screen"]);
+
+    press_new_game(&mut app, NewGameAction::Back);
+    assert_eq!(state(&app), AppState::NewGameChoice);
+    let world = app.world_mut();
+    assert_eq!(world.query::<&NewGameScreen>().iter(world).count(), 0);
+
+    activate(&mut app, MenuAction::PickCharacter);
+    app.update();
+    press_escape(&mut app);
+    assert_eq!(state(&app), AppState::NewGameChoice, "Escape goes back too");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Brightness
+
+#[test]
+fn brightness_follows_the_setting_on_the_camera() {
+    use arcanum_client::brightness::{Brightness, brightness_exponent};
+    let fx = Fixture::new();
+    let mut app = menu_app(fx.vfs());
+    app.add_plugins(arcanum_client::BrightnessPlugin);
+    app.insert_resource(GameSettings { brightness: 0.2, ..default() });
+    run_until_menu_ready(&mut app);
+    app.update();
+    let exponent = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&Brightness, With<Camera2d>>().single(world).unwrap().exponent
+    };
+    assert_eq!(exponent(&mut app), brightness_exponent(0.2));
+    assert!(exponent(&mut app) > 1.0, "below the middle darkens");
+
+    app.world_mut().resource_mut::<GameSettings>().brightness = 0.9;
+    app.update();
+    assert_eq!(exponent(&mut app), brightness_exponent(0.9));
+    assert!(exponent(&mut app) < 1.0, "above the middle lightens");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Multi-line bitmap text
+
+#[test]
+fn wrapped_bitmap_text_grows_to_several_lines() {
+    use arcanum_client::bitmap_text::Align;
+    let mut app = ready_menu(&fixture_with_fonts());
+    let font = app.world().resource::<ArcanumFonts>().small.clone().unwrap();
+    let story = "\tA long story that goes on for a good while.\nSecond paragraph here.";
+    let one_line = app.world_mut().spawn(BitmapText::new("single line", font.clone(), 1.0)).id();
+    let block = app.world_mut().spawn(BitmapText::new(story, font.clone(), 1.0).wrapped(40.0, Align::Left)).id();
+    let escaped = app.world_mut().spawn(BitmapText::new("one\\ntwo", font, 1.0)).id();
+    run_until_text_rendered(&mut app);
+    let height = |app: &App, e: Entity| match app.world().get::<Node>(e).unwrap().height {
+        Val::Px(h) => h,
+        other => panic!("{other:?}"),
+    };
+    let width = |app: &App, e: Entity| match app.world().get::<Node>(e).unwrap().width {
+        Val::Px(w) => w,
+        other => panic!("{other:?}"),
+    };
+    // Heights are lines * line height, plus one pixel of shadow.
+    assert_eq!(height(&app, one_line), (SMALL_LINE + 1) as f32);
+    assert_eq!(height(&app, escaped), (2 * SMALL_LINE + 1) as f32, "escaped \\n breaks the line");
+    let lines = (height(&app, block) - 1.0) / SMALL_LINE as f32;
+    assert!(lines >= 4.0, "wrapped into {lines} lines");
+    assert_eq!(width(&app, block), 41.0, "as wide as the wrap width (plus the shadow)");
+}
+
+// ---------------------------------------------------------------------------------------------
+// New Game choice (pre-made or custom)
+
+fn open_new_game_picker(fx: &Fixture) -> App {
+    let mut app = open_single_player(fx);
+    activate(&mut app, MenuAction::NewGame);
+    app.update();
+    activate(&mut app, MenuAction::PickCharacter);
+    app.update();
+    app
+}
+
+#[test]
+fn new_game_first_asks_pre_made_or_custom() {
+    let mut app = open_single_player(&Fixture::new());
+    activate(&mut app, MenuAction::NewGame);
+    app.update();
+    assert_eq!(state(&app), AppState::NewGameChoice);
+    assert_eq!(
+        label_order(&mut app),
+        [(420, "Premade"), (421, "Custom"), (422, "Return")].map(|(id, t)| (id, t.to_string()))
+    );
+    // New Character opens character creation; Back and Escape return here.
+    activate(&mut app, MenuAction::CreateCharacter);
+    app.update();
+    assert_eq!(state(&app), AppState::CreateCharacter);
+    let world = app.world_mut();
+    assert_eq!(world.query::<&arcanum_client::create_character::CreateCharacterScreen>().iter(world).count(), 1);
+    press_escape(&mut app);
+    assert_eq!(state(&app), AppState::NewGameChoice);
+    let back = {
+        activate(&mut app, MenuAction::CreateCharacter);
+        app.update();
+        let world = app.world_mut();
+        world
+            .query::<(Entity, &arcanum_client::create_character::CreateAction)>()
+            .iter(world)
+            .find(|(_, a)| **a == arcanum_client::create_character::CreateAction::Back)
+            .unwrap()
+            .0
+    };
+    app.world_mut().trigger(Activate { entity: back });
+    app.update();
+    app.update();
+    assert_eq!(state(&app), AppState::NewGameChoice);
+
+    activate(&mut app, MenuAction::BackToSinglePlayer);
+    app.update();
+    assert_eq!(state(&app), AppState::SinglePlayer);
+    activate(&mut app, MenuAction::NewGame);
+    app.update();
+    press_escape(&mut app);
+    assert_eq!(state(&app), AppState::SinglePlayer, "Escape goes back one level");
+
+    activate(&mut app, MenuAction::NewGame);
+    app.update();
+    activate(&mut app, MenuAction::PickCharacter);
+    app.update();
+    assert_eq!(state(&app), AppState::NewGame);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pre-made character picker
+
+fn sample_premades() -> arcanum_client::premade::PremadeCharacters {
+    use arcanum_client::premade::Premade;
+    let p = |prototype, name: &str, race: &str, gender: &str| Premade {
+        prototype,
+        name: name.into(),
+        race: race.into(),
+        gender: gender.into(),
+        age: 20,
+        level: 1,
+        background: 46,
+        story: format!("{name}\r\n\r\n\tA story about {name}."),
+        portrait: None,
+    };
+    arcanum_client::premade::PremadeCharacters(vec![
+        p(16087, "Merwin", "Halfling", "Male"),
+        p(16094, "Lugard", "Dwarf", "Male"),
+        p(16095, "Victoria", "Human", "Female"),
+    ])
+}
+
+fn picker_text(app: &mut App, which: arcanum_client::new_game::PickerText) -> String {
+    let world = app.world_mut();
+    let e = world.query::<(Entity, &arcanum_client::new_game::PickerText)>().iter(world).find(|(_, t)| **t == which).unwrap().0;
+    texts_in(app, e).remove(0)
+}
+
+/// The picker's characters, and the host's rules knowing their sheets (built from the same
+/// prototypes in the real game).
+fn with_pickable_premades(app: &mut App) {
+    app.insert_resource(sample_premades());
+    let mut data = creation_data();
+    for (prototype, name) in [(16087, "Merwin"), (16094, "Lugard")] {
+        let sheet = arcanum_rules::CharacterSheet { name: name.into(), ..Default::default() };
+        data.rules.premades.push(arcanum_rules::Premade { prototype, sheet, gold: 0, items: vec![] });
+    }
+    app.insert_resource(data);
+}
+
+#[test]
+fn the_picker_cycles_through_the_characters_and_shows_them() {
+    use arcanum_client::new_game::{PickerIndex, PickerText};
+    let mut app = ready_menu(&Fixture::new());
+    with_pickable_premades(&mut app);
+    activate(&mut app, MenuAction::SinglePlayer);
+    app.update();
+    activate(&mut app, MenuAction::NewGame);
+    app.update();
+    activate(&mut app, MenuAction::PickCharacter);
+    app.update();
+    app.update();
+    assert_eq!(app.world().resource::<PickerIndex>().0, 0);
+    assert_eq!(picker_text(&mut app, PickerText::Name), "Merwin");
+    assert_eq!(picker_text(&mut app, PickerText::Bar(0)), "Male");
+    assert_eq!(picker_text(&mut app, PickerText::Bar(1)), "Halfling");
+    assert_eq!(picker_text(&mut app, PickerText::Bar(2)), "Merwin", "the background's title line");
+    assert_eq!(picker_text(&mut app, PickerText::StatsHeading), "Initial Stats");
+    // The body is the story without its heading line (the fallback font turns the tab into spaces).
+    assert_eq!(picker_text(&mut app, PickerText::StoryBody).trim(), "A story about Merwin.");
+
+    press_new_game(&mut app, NewGameAction::Following);
+    assert_eq!(picker_text(&mut app, PickerText::Name), "Lugard");
+    press_new_game(&mut app, NewGameAction::Previous);
+    press_new_game(&mut app, NewGameAction::Previous);
+    assert_eq!(picker_text(&mut app, PickerText::Name), "Victoria", "wraps backwards");
+    assert_eq!(picker_text(&mut app, PickerText::Bar(0)), "Female");
+    assert_eq!(picker_text(&mut app, PickerText::Bar(1)), "Human");
+    press_new_game(&mut app, NewGameAction::Following);
+    assert_eq!(picker_text(&mut app, PickerText::Name), "Merwin", "and forwards");
+    // Only one character's content at a time, and it lets the pointer through: it is a
+    // full-screen layer above the buttons, and blocking would make every button dead to the mouse.
+    let world = app.world_mut();
+    let layers: Vec<Option<&bevy::picking::Pickable>> =
+        world.query_filtered::<Option<&bevy::picking::Pickable>, With<arcanum_client::new_game::PickerContent>>().iter(world).collect();
+    assert_eq!(layers.len(), 1);
+    let pickable = layers[0].expect("the content layer must set Pickable");
+    assert!(!pickable.should_block_lower && !pickable.is_hoverable);
+
+    press_new_game(&mut app, NewGameAction::Following);
+    press_new_game(&mut app, NewGameAction::Next);
+    let host = app.world().resource::<arcanum_client::character_host::CharacterHost>();
+    let finished = host.finished.as_ref().expect("Next finishes the character");
+    assert_eq!((finished.prototype, finished.sheet.name.as_str()), (Some(16094), "Lugard"));
+    assert_eq!(state(&app), AppState::Loading);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Character creation
+
+fn creation_data() -> arcanum_client::create_character::CreationData {
+    use arcanum_rules::RulesData;
+    use arcanum_formats::mes::MesFile;
+    let mes = |t: &str| MesFile::parse(t.as_bytes()).unwrap();
+    arcanum_client::create_character::CreationData {
+        rules: RulesData::from_files(
+            &mes("{0}{1000}{1}{86}{2}{}{10}{1001}{11}{90}{12}{}"),
+            &mes("{65}{st +1, cn +1, ch -1, dx -1}{90}{pe +1}"),
+            &mes("{1001}{DWM1}{1005}{HUM1}{1018}{HUM2}{1008}{HUF1}"),
+        ),
+        menu: mes("{500}{Choose Name}{506}{You must choose a name.}{720}{Human}{721}{Dwarf}{722}{Elf}{739}{Initial Stats}{740}{Female}{741}{Male}{745}{Race}{771}{Human men.}{773}{Dwarf men.}"),
+        stats: mes("{0}{Strength}{1}{Dexterity}{2}{Constitution}{3}{Beauty}{4}{Intelligence}{5}{Perception}{6}{Willpower}{7}{Charisma}"),
+        stories: mes("{1000}{No significant background\n\nNothing happened.}{1001}{Raised by Monks\n\nQuiet years.}"),
+        charedit: mes("{0}{Points}{1}{Level}{2}{XP Next}{4}{Race}{5}{Gender}{6}{Age}{7}{Derived Stats}{8}{Resistance}{12}{Damage}{13}{Magick}{14}{Fire}{15}{Poison}{16}{Electrical}{17}{Stat has reached its maximum value.}{18}{You haven't enough character points.}{19}{You cannot reduce this stat below its last accepted level.}{20}{Stat has reached its minimum value.}"),
+    }
+}
+
+fn create_text(app: &mut App, which: arcanum_client::create_character::CreateText) -> String {
+    let world = app.world_mut();
+    let e = world.query::<(Entity, &arcanum_client::create_character::CreateText)>().iter(world).find(|(_, t)| **t == which).unwrap().0;
+    texts_in(app, e).remove(0)
+}
+
+fn press_create(app: &mut App, action: arcanum_client::create_character::CreateAction) {
+    let entity = {
+        let world = app.world_mut();
+        world.query::<(Entity, &arcanum_client::create_character::CreateAction)>().iter(world).find(|(_, a)| **a == action).map(|(e, _)| e).unwrap()
+    };
+    app.world_mut().trigger(Activate { entity });
+    app.update();
+    app.update();
+}
+
+fn type_keys(app: &mut App, text: &str) {
+    use bevy::input::ButtonState;
+    use bevy::input::keyboard::{Key, KeyboardInput};
+    for c in text.chars() {
+        let logical_key = match c {
+            '\u{8}' => Key::Backspace,
+            '\n' => Key::Enter,
+            '\u{1b}' => Key::Escape,
+            _ => Key::Character(c.to_string().into()),
+        };
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::KeyA,
+            logical_key,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+    }
+    app.update();
+    app.update();
+}
+
+#[test]
+fn character_creation_builds_a_character() {
+    use arcanum_client::create_character::{CreateAction, CreateText};
+    let mut app = ready_menu(&Fixture::new());
+    app.add_message::<bevy::input::keyboard::KeyboardInput>();
+    app.insert_resource(creation_data());
+    activate(&mut app, MenuAction::SinglePlayer);
+    app.update();
+    activate(&mut app, MenuAction::NewGame);
+    app.update();
+    activate(&mut app, MenuAction::CreateCharacter);
+    app.update();
+    app.update();
+
+    // The template: a nameless human male, no background, base stats.
+    assert_eq!(create_text(&mut app, CreateText::Name), "Choose Name");
+    assert_eq!(create_text(&mut app, CreateText::Gender), "Male");
+    assert_eq!(create_text(&mut app, CreateText::Race), "Human");
+    assert_eq!(create_text(&mut app, CreateText::Background), "No significant background");
+    assert_eq!(create_text(&mut app, CreateText::Stat(0)), "Strength: 8");
+    assert_eq!(create_text(&mut app, CreateText::PanelHeading), "Race");
+    assert_eq!(create_text(&mut app, CreateText::PanelBody), "Human men.");
+
+    // Next without a name is refused with the original's message.
+    press_create(&mut app, CreateAction::Next);
+    assert_eq!(state(&app), AppState::CreateCharacter);
+    assert_eq!(app.world().resource::<arcanum_client::menu_window::HelpMessage>().0.as_deref(), Some("You must choose a name."));
+
+    // Race: dwarf changes the stats and the description; dwarves cannot be female.
+    press_create(&mut app, CreateAction::Race(1));
+    assert_eq!(create_text(&mut app, CreateText::Race), "Dwarf");
+    assert_eq!(create_text(&mut app, CreateText::Stat(0)), "Strength: 9");
+    assert_eq!(create_text(&mut app, CreateText::PanelBody), "Dwarf men.");
+    press_create(&mut app, CreateAction::Gender);
+    assert_eq!(create_text(&mut app, CreateText::Gender), "Male", "no female dwarves");
+
+    // A background replaces the race description with its story.
+    press_create(&mut app, CreateAction::Background(1));
+    assert_eq!(create_text(&mut app, CreateText::Background), "Raised by Monks");
+    assert_eq!(create_text(&mut app, CreateText::Stat(5)), "Perception: 9");
+    assert_eq!(create_text(&mut app, CreateText::PanelBody), "Quiet years.");
+
+    // The name is a text field. Typing does nothing until it is focused.
+    type_keys(&mut app, "zzz");
+    assert_eq!(create_text(&mut app, CreateText::Name), "Choose Name");
+    let field = {
+        let world = app.world_mut();
+        world.query_filtered::<Entity, With<arcanum_client::create_character::NameField>>().single(world).unwrap()
+    };
+    let name_color = |app: &mut App| {
+        let world = app.world_mut();
+        world.query_filtered::<&TextColor, With<arcanum_client::text_field::TextFieldText>>().single(world).unwrap().0
+    };
+    // Hover lightens it.
+    let normal = name_color(&mut app);
+    app.world_mut().entity_mut(field).insert(Hovered(true));
+    app.update();
+    assert_eq!(name_color(&mut app), arcanum_client::create_character::NAME_HOVER);
+    app.world_mut().entity_mut(field).insert(Hovered(false));
+    app.update();
+    assert_eq!(name_color(&mut app), normal);
+
+    // A click focuses it: the placeholder clears and the caret shows.
+    app.world_mut().trigger(Activate { entity: field });
+    app.update();
+    assert_eq!(create_text(&mut app, CreateText::Name), "|");
+    // Leaving an empty field (Enter here; a click elsewhere does the same) restores the placeholder.
+    type_keys(&mut app, "\n");
+    assert_eq!(create_text(&mut app, CreateText::Name), "Choose Name");
+    app.world_mut().trigger(Activate { entity: field });
+    app.update();
+    // Typing names the character; Backspace deletes; the caret follows the text.
+    type_keys(&mut app, "Virgilx\u{8}");
+    assert!(create_text(&mut app, CreateText::Name).starts_with("Virgil"));
+    // Escape unfocuses the field without leaving the screen. A real key press arrives both as a
+    // keyboard message and as button input in the same frame.
+    {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput};
+        app.world_mut().write_message(KeyboardInput {
+            key_code: KeyCode::Escape,
+            logical_key: Key::Escape,
+            state: ButtonState::Pressed,
+            text: None,
+            repeat: false,
+            window: Entity::PLACEHOLDER,
+        });
+    }
+    press_escape(&mut app);
+    assert_eq!(state(&app), AppState::CreateCharacter, "Escape only left the text field");
+    assert_eq!(create_text(&mut app, CreateText::Name), "Virgil", "unfocused: no caret");
+    // A second Escape, with nothing focused, leaves as usual (checked last, below, via Next).
+
+    // The content layer lets the pointer through to the arrows.
+    let world = app.world_mut();
+    let layer = world.query_filtered::<&bevy::picking::Pickable, With<arcanum_client::create_character::CreateContent>>().single(world).unwrap();
+    assert!(!layer.should_block_lower);
+
+    press_create(&mut app, CreateAction::Next);
+    assert_eq!(state(&app), AppState::CharacterEditor, "Next opens the stats page");
+    character_editor_spends_points(&mut app);
+    let host = app.world().resource::<arcanum_client::character_host::CharacterHost>();
+    let made = host.finished.clone().expect("Next finishes the character");
+    assert_eq!((made.sheet.name.as_str(), made.sheet.race, made.sheet.background, made.prototype), ("Virgil", 1, 1, None));
+    assert_eq!(made.sheet.base[0], 9, "the strength point bought in the editor, accepted");
+    assert_eq!(state(&app), AppState::Loading);
+}
+
+fn editor_text(app: &mut App, which: arcanum_client::character_editor::EditorText) -> String {
+    let world = app.world_mut();
+    let e = world.query::<(Entity, &arcanum_client::character_editor::EditorText)>().iter(world).find(|(_, t)| **t == which).unwrap().0;
+    texts_in(app, e).remove(0)
+}
+
+fn press_editor(app: &mut App, action: arcanum_client::character_editor::EditorAction) {
+    let entity = {
+        let world = app.world_mut();
+        world.query::<(Entity, &arcanum_client::character_editor::EditorAction)>().iter(world).find(|(_, a)| **a == action).map(|(e, _)| e).unwrap()
+    };
+    app.world_mut().trigger(Activate { entity });
+    app.update();
+    app.update();
+}
+
+/// Runs on the editor opened by the creation test (a dwarf named Virgil, raised by monks).
+fn character_editor_spends_points(app: &mut App) {
+    use arcanum_client::character_editor::{EditorAction, EditorText};
+    use arcanum_client::create_character::CreateText;
+    use arcanum_client::menu_window::HelpMessage;
+    app.update();
+    assert_eq!(editor_text(app, EditorText::Name), "Virgil");
+    assert_eq!(editor_text(app, EditorText::Points), "Points: 5");
+    assert_eq!(editor_text(app, EditorText::Race), "Race: Dwarf");
+    assert_eq!(editor_text(app, EditorText::XpNext), "XP Next: 2100");
+    assert_eq!(editor_text(app, EditorText::Stat(0)), "9", "dwarf strength");
+    // Spend: +1 strength costs a point and updates derived stats.
+    press_editor(app, EditorAction::Stat(0, 1));
+    assert_eq!(editor_text(app, EditorText::Stat(0)), "10");
+    assert_eq!(editor_text(app, EditorText::Points), "Points: 4");
+    // Hit points: +4 per point.
+    let hp: i32 = editor_text(app, EditorText::HitPoints).parse().unwrap();
+    press_editor(app, EditorAction::HitPoints(1));
+    assert_eq!(editor_text(app, EditorText::HitPoints).parse::<i32>().unwrap(), hp + 4);
+    // Lowering below the starting value is refused with the original's message.
+    press_editor(app, EditorAction::Stat(1, -1));
+    assert_eq!(app.world().resource::<HelpMessage>().0.as_deref(), Some("You cannot reduce this stat below its last accepted level."));
+    // Back keeps the character; returning to the editor keeps the points spent.
+    press_editor(app, EditorAction::Back);
+    assert_eq!(state(app), AppState::CreateCharacter);
+    assert_eq!(create_text(app, CreateText::Race), "Dwarf", "the character survives going back");
+    press_create(app, arcanum_client::create_character::CreateAction::Next);
+    assert_eq!(editor_text(app, EditorText::Points), "Points: 3", "points spent are kept");
+    press_editor(app, EditorAction::Next);
 }

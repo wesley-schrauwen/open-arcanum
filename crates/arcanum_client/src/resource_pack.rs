@@ -31,6 +31,9 @@ pub mod paths {
         pub const MAIN_MENU: &str = "art/interface/mainmenuback.art";
         /// Splash screens shown at startup (`.bmp`).
         pub const SPLASH_DIR: &str = "art/splash";
+        /// "Loading Arcanum..." pictures, 800x400 with the words painted in. The loading screen
+        /// shows one at random.
+        pub const LOADING: [&str; 3] = ["art/splash/Splash1.bmp", "art/splash/Splash2.bmp", "art/splash/Splash3.bmp"];
     }
 
     /// Interface art: buttons, windows, cursors.
@@ -38,6 +41,54 @@ pub mod paths {
         pub const DIR: &str = "art/interface";
         /// Interface art id -> file name.
         pub const INDEX: &str = "art/interface/interface.mes";
+        /// Options screen background, 800x600: tab box, title plate, 2x4 grid of setting slots.
+        pub const OPTIONS_BACK: &str = "art/interface/OptionsMenuBack.ART";
+        /// Setting slot with a slider tube, 213x56.
+        pub const OPTION_SLIDER: &str = "art/interface/OptionSlider.ART";
+        /// Setting slot with a value window, 213x56.
+        pub const OPTION_CHOICE: &str = "art/interface/OptionMultiChoice.ART";
+        /// Left/right arrow buttons for setting slots, 29x30. Frames: normal, pressed, hover.
+        pub const ARROW_LEFT: &str = "art/interface/SldrButt_L_Arrow.ART";
+        pub const ARROW_RIGHT: &str = "art/interface/SldrButt_R_Arrow.ART";
+        /// Pocket watch shown while loading: 30 frames at 15 fps.
+        pub const LOAD_INDICATOR: &str = "art/interface/LoadIndicator.ART";
+
+        // Load Game screen (interface art 745-748, 320-323, 32), laid out by the original's
+        // screen table in Arcanum.exe (0x5c4560).
+        /// Bars above (800x41) and below (800x159) the 800x400 menu screens.
+        pub const TOP_BAR: &str = "art/interface/CharCreateTopBar.ART";
+        pub const BOTTOM_BAR: &str = "art/interface/CharCreateBottomBar.ART";
+        /// New Game character picker: portrait box with arrows, four info bars, two description
+        /// panels, 800x400.
+        pub const PREGEN_BACK: &str = "art/interface/PreGenCharacterBase.ART";
+        /// Character creation: portrait box with sockets, four bars (2-4 with sockets at both
+        /// ends), two right panels; 800x400 (art 765).
+        pub const CREATE_BACK: &str = "art/interface/CreateCharacterBase.ART";
+        /// Previous/next character arrows beside the picker's portrait (art 283/284).
+        pub const PICKER_LEFT: &str = "art/interface/Big_Grn_L.ART";
+        pub const PICKER_RIGHT: &str = "art/interface/Big_Grn_R.ART";
+        /// Small left/right arrows on character creation's gender, race and background bars
+        /// (art 757/758, 23x23).
+        pub const CYCLE_LEFT: &str = "art/interface/MPCycleLeftButton.ART";
+        pub const CYCLE_RIGHT: &str = "art/interface/MPCycleRightButton.ART";
+        /// Character editor background with the stat ovals, heart, cross and panels (art 22,
+        /// 800x400), and its +/- buttons (art 24/23, 19x19, 4 frames).
+        pub const CHAR_MAINT: &str = "art/interface/Char_Maint.art";
+        pub const CHAR_PLUS: &str = "art/interface/Char_Plus.art";
+        pub const CHAR_MINUS: &str = "art/interface/Char_Minus.art";
+        /// Save list box, portrait socket and screenshot oval (transparent windows), 800x400.
+        pub const SAVE_LOAD_BACK: &str = "art/interface/SaveLoadBackground.ART";
+        /// Ring over the portrait, 89x89.
+        pub const SAVE_LOAD_LENS: &str = "art/interface/SaveLoadPCLens.ART";
+        /// Frame over the save's screenshot, 468x300.
+        pub const SAVE_SHOT_COVER: &str = "art/interface/SaveShotCover.ART";
+        /// Round bottom-bar buttons, 61x61. Frames: normal, pressed, hover.
+        pub const NEXT_BUTTON: &str = "art/interface/NextBut.ART";
+        pub const BACK_BUTTON: &str = "art/interface/BackBut.ART";
+        /// Delete button, 38x37. Frames: normal, pressed, hover.
+        pub const DELETE_BUTTON: &str = "art/interface/cncl_big.art";
+        /// Info display toggle, 33x33. Frames: off, on.
+        pub const TEXT_TOGGLE: &str = "art/interface/TextToggle.ART";
     }
 
     /// Character portraits (`.bmp`).
@@ -78,18 +129,36 @@ pub mod paths {
         pub const INDEX: &str = "art/scenery/scenery.mes";
     }
 
-    /// Fonts supplied in the override folder. The game itself ships only bitmap `.art` fonts
-    /// (e.g. `art/morph15font.art`), so these are optional and not part of `ALL_FILES`.
+    /// Fonts. The game's own are bitmap `.art` fonts; [`SERIF`](fonts::SERIF) is an optional
+    /// TrueType override that is not part of the game data (so not in `ALL_FILES`).
     pub mod fonts {
-        /// TrueType font for menu text. Falls back to Bevy's built-in font when absent.
+        /// Menu entries and titles.
+        pub const LARGE: &str = "art/interface/Morph30Font.ART";
+        /// Hints and small print.
+        pub const SMALL: &str = "art/interface/morph15font.art";
+        /// Running text on the character screens (interface art 229).
+        pub const BODY: &str = "art/interface/Flare12Font.art";
+        /// TrueType override for UI text. Takes priority over the bitmap fonts when present.
         pub const SERIF: &str = "fonts/arcanum_serif.ttf";
     }
 
     /// Message (`.mes`) files with UI and game text.
     pub mod text {
         pub const DIR: &str = "mes";
-        /// Main menu strings; ids 10 to 14 are the main menu entries.
+        /// Main menu strings; ids 10 to 14 are the main menu entries, 4000 to 4003 the Options
+        /// screen's Game, Video, Sound and Done buttons.
         pub const MAIN_MENU: &str = "mes/MainMenu.mes";
+        /// Options setting names (100s Game, 200s Video, 300s Sound).
+        pub const OPTIONS_UI: &str = "mes/options_ui.mes";
+        /// Option values: Off/On; floating text modes.
+        pub const OPTIONS_OFF_ON: &str = "mes/OptionsOffOn.mes";
+        pub const OPTIONS_FLOATS: &str = "mes/OptionsFloats.mes";
+        /// Character rules tables (read by `arcanum_rules::RulesData::load`).
+        pub const SKILLS: &str = "mes/skill.mes";
+        pub const TECH: &str = "mes/tech.mes";
+        pub const SPELLS: &str = "mes/spell.mes";
+        pub const SCHEMATICS: &str = "rules/schematic.mes";
+        pub const SCHEMATIC_TEXT: &str = "mes/schematic_text.mes";
     }
 
     /// Sound effects (`.wav`) and music (`.mp3`, loose files in the module folder).
@@ -101,11 +170,38 @@ pub mod paths {
         /// Menu text hover and click (ids 3026 and 3027 in `sound/snd_interface.mes`).
         pub const MENU_HOVER: &str = "sound/MorphText_HOVER.wav";
         pub const MENU_CLICK: &str = "sound/MorphText_CLICK.wav";
+        /// Picture-button press and release (ids 3000 and 3001), used by the Options arrows. The
+        /// original's slider arrows (`SldrButt_L_Arrow`/`SldrButt_R_Arrow`, interface art 667/668)
+        /// use these, with no hover sound (Arcanum.exe around 0x57fe60).
+        pub const BUTTON_PRESS: &str = "sound/Button_Medium.wav";
+        pub const BUTTON_RELEASE: &str = "sound/Button_Medium_Release.wav";
     }
 
     /// Every file path above, for checks.
     pub const ALL_FILES: &[&str] = &[
         backgrounds::MAIN_MENU,
+        backgrounds::LOADING[0],
+        backgrounds::LOADING[1],
+        backgrounds::LOADING[2],
+        interface::LOAD_INDICATOR,
+        interface::TOP_BAR,
+        interface::BOTTOM_BAR,
+        interface::SAVE_LOAD_BACK,
+        interface::PREGEN_BACK,
+        interface::CREATE_BACK,
+        interface::PICKER_LEFT,
+        interface::PICKER_RIGHT,
+        interface::CYCLE_LEFT,
+        interface::CYCLE_RIGHT,
+        interface::CHAR_MAINT,
+        interface::CHAR_PLUS,
+        interface::CHAR_MINUS,
+        interface::SAVE_LOAD_LENS,
+        interface::SAVE_SHOT_COVER,
+        interface::NEXT_BUTTON,
+        interface::BACK_BUTTON,
+        interface::DELETE_BUTTON,
+        interface::TEXT_TOGGLE,
         interface::INDEX,
         portraits::INDEX,
         textures::TILE_NAMES,
@@ -115,9 +211,27 @@ pub mod paths {
         items::GROUND_INDEX,
         scenery::INDEX,
         text::MAIN_MENU,
+        text::OPTIONS_UI,
+        text::OPTIONS_OFF_ON,
+        text::OPTIONS_FLOATS,
+        text::SKILLS,
+        text::TECH,
+        text::SPELLS,
+        text::SCHEMATICS,
+        text::SCHEMATIC_TEXT,
+        interface::OPTIONS_BACK,
+        interface::OPTION_SLIDER,
+        interface::OPTION_CHOICE,
+        interface::ARROW_LEFT,
+        interface::ARROW_RIGHT,
         sound::MAIN_MENU_MUSIC,
         sound::MENU_HOVER,
         sound::MENU_CLICK,
+        sound::BUTTON_PRESS,
+        sound::BUTTON_RELEASE,
+        fonts::LARGE,
+        fonts::SMALL,
+        fonts::BODY,
     ];
 
     /// Every directory path above, for checks.
@@ -175,7 +289,9 @@ impl ResourcePack {
     /// 2. the module's patch archives `modules/<module>.PATCH*`, highest number first;
     /// 3. the module folder `modules/<module>/` (loose files such as music);
     /// 4. the module archive `modules/<module>.dat`;
-    /// 5. every `.dat` in the game folder.
+    /// 5. the game's loose `data/` folder (prototypes in `proto/`, `Players/`), which the original
+    ///    also reads above its archives;
+    /// 6. every `.dat` in the game folder.
     ///
     /// Missing module pieces are skipped; a missing game folder is an error.
     pub fn open_vfs(&self) -> io::Result<Vfs> {
@@ -194,6 +310,10 @@ impl ResourcePack {
         let module_dat = modules.join(format!("{}.dat", self.module));
         if module_dat.is_file() {
             vfs.mount_archive(module_dat)?;
+        }
+        let data_dir = self.game_dir.join("data");
+        if data_dir.is_dir() {
+            vfs.mount_dir(data_dir);
         }
         vfs.mount_archives_in(&self.game_dir)?;
         Ok(vfs)
@@ -319,6 +439,15 @@ mod tests {
         // A module that does not exist is not an error.
         let vfs = pack(None, "Missing").open_vfs().unwrap();
         assert_eq!(vfs.read("who.txt").unwrap(), b"base");
+
+        // The loose data folder sits above the base archives and below the module.
+        write(&g.join("data/who.txt"), b"data");
+        write(&g.join("data/proto/016094 - PC.pro"), b"proto");
+        let vfs = pack(None, "Missing").open_vfs().unwrap();
+        assert_eq!(vfs.read("who.txt").unwrap(), b"data");
+        assert_eq!(vfs.read("proto/016094 - pc.pro").unwrap(), b"proto");
+        let vfs = pack(None, "Arcanum").open_vfs().unwrap();
+        assert_eq!(vfs.read("who.txt").unwrap(), b"patch1");
     }
 
     #[test]

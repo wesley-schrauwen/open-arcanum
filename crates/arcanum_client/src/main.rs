@@ -1,16 +1,26 @@
 use std::sync::{Arc, RwLock};
 
-use arcanum_client::main_menu::menu_ready;
+use arcanum_client::main_menu::{MenuLabel, FitToBaseline};
+use arcanum_client::options::OptionSlot;
 use arcanum_client::{
-    ArcanumAssetsPlugin, DisplayPlugin, FontsPlugin, GameSettings, MainMenuPlugin, MenuAudioPlugin, ResourcePack,
-    ScreensPlugin, VfsAssetPlugin,
+    ArcanumAssetsPlugin, BitmapTextPlugin, BrightnessPlugin, CharacterEditorPlugin, ConfigPlugin, CreateCharacterPlugin, DisplayPlugin, FontsPlugin, LoadGamePlugin, LoadingPlugin, NewGamePlugin, MainMenuPlugin, MenuAudioPlugin, ResourcePack,
+    OptionsPlugin, ScreensPlugin, VfsAssetPlugin,
 };
+use arcanum_client::AppState;
+use arcanum_client::config;
+use arcanum_client::load_game::{LoadGameScreen, sample_saves};
+use arcanum_client::new_game::NewGameScreen;
+use arcanum_client::loading::{LoadRequest, LoadingPicture};
+use arcanum_client::settings::EnvOverrides;
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 
 /// Debugging aid: when set to a file path, saves the window there once the menu has loaded,
 /// then exits.
 const SCREENSHOT_VAR: &str = "DEBUG_ARCANUM_SCREENSHOT";
+/// Debugging aid: `options`, `singleplayer`, `newgamechoice`, `newgame`, `loadgame` or `loading` opens that screen instead of
+/// the main menu.
+const SCREEN_VAR: &str = "DEBUG_ARCANUM_SCREEN";
 
 fn main() {
     // Game data: `ARCANUM_DIR` (default `assets/Arcanum`), optional `ARCANUM_OVERRIDE` and
@@ -20,9 +30,12 @@ fn main() {
         .open_vfs()
         .unwrap_or_else(|e| panic!("cannot open game data in {}: {e}", pack.game_dir.display()));
     let vfs = Arc::new(RwLock::new(vfs));
-    let settings = GameSettings::from_env();
+    // Defaults, then the saved config file, then ARCANUM_RES / ARCANUM_FULLSCREEN. Resolved before
+    // the window exists so it opens at the saved size.
+    let (settings, config) = config::load(config::path_from_env(), EnvOverrides::from_env());
     let mut app = App::new();
     app.insert_resource(settings.clone())
+        .insert_resource(config)
         .insert_resource(pack)
         // Must come before DefaultPlugins so the VFS replaces the default asset source.
         .add_plugins(VfsAssetPlugin::new(vfs))
@@ -35,11 +48,51 @@ fn main() {
             }),
             ..default()
         }))
-        .add_plugins((ArcanumAssetsPlugin, DisplayPlugin, FontsPlugin, MenuAudioPlugin, MainMenuPlugin, ScreensPlugin));
+        .add_plugins((
+            ArcanumAssetsPlugin,
+            BitmapTextPlugin,
+            BrightnessPlugin,
+            ConfigPlugin,
+            CreateCharacterPlugin,
+            CharacterEditorPlugin,
+            DisplayPlugin,
+            FontsPlugin,
+            LoadGamePlugin,
+            LoadingPlugin,
+            NewGamePlugin,
+            MenuAudioPlugin,
+            MainMenuPlugin,
+            OptionsPlugin,
+            ScreensPlugin,
+        ));
+
+    // Debugging aid: `DEBUG_ARCANUM_SCREEN=options|singleplayer|newgamechoice|newgame|createcharacter|charactereditor|loadgame|loading` opens that screen.
+    let start = match std::env::var(SCREEN_VAR).unwrap_or_default().to_ascii_lowercase().as_str() {
+        "options" => Some(AppState::Options),
+        "singleplayer" => Some(AppState::SinglePlayer),
+        "newgamechoice" => Some(AppState::NewGameChoice),
+        "newgame" => Some(AppState::NewGame),
+        "createcharacter" => Some(AppState::CreateCharacter),
+        "charactereditor" => Some(AppState::CharacterEditor),
+        // With example saves, so the list and info display have something to show.
+        "loadgame" => {
+            app.insert_resource(sample_saves());
+            Some(AppState::LoadGame)
+        }
+        // Stays up for a minute so it can be captured.
+        "loading" => {
+            app.insert_resource(LoadRequest::new(AppState::MainMenu).min_secs(60.0));
+            Some(AppState::Loading)
+        }
+        _ => None,
+    };
+    if let Some(start) = start {
+        app.add_systems(Startup, move |mut next: ResMut<NextState<AppState>>| next.set(start));
+    }
 
     if let Ok(path) = std::env::var(SCREENSHOT_VAR) {
         app.insert_resource(ScreenshotPath(path))
-            .add_systems(Update, screenshot_and_exit.run_if(menu_ready));
+            .add_systems(Update, screenshot_and_exit.run_if(screen_ready));
     }
     app.run();
 }
@@ -57,10 +110,28 @@ fn screenshot_and_exit(
 ) {
     let frames = frames_since_ready.get_or_insert(0);
     *frames += 1;
-    // A few frames' grace so the background's scale and the UI layout have been applied.
-    if *frames == 10 {
+    // Grace frames so the layout has been applied and the renderer has finished preparing its
+    // pipelines (a screen that is ready very early would otherwise be captured black).
+    if *frames == 60 {
         commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.0.clone()));
-    } else if *frames == 100 {
+    } else if *frames == 150 {
         exit.write(AppExit::Success);
     }
+}
+
+/// True once a menu, the Options screen or the loading screen is up and the background has been
+/// fitted.
+fn screen_ready(
+    labels: Query<(), With<MenuLabel>>,
+    slots: Query<(), With<OptionSlot>>,
+    pending: Query<(), With<FitToBaseline>>,
+    loading: Query<&ImageNode, With<LoadingPicture>>,
+    load_game: Query<(), With<LoadGameScreen>>,
+    new_game: Query<(), With<NewGameScreen>>,
+    create: Query<(), With<arcanum_client::create_character::CreateCharacterScreen>>,
+    editor: Query<(), With<arcanum_client::character_editor::CharacterEditorScreen>>,
+    images: Res<Assets<Image>>,
+) -> bool {
+    let loading_up = loading.iter().any(|p| images.get(&p.image).is_some());
+    (!labels.is_empty() || !slots.is_empty() || loading_up || !load_game.is_empty() || !new_game.is_empty() || !create.is_empty() || !editor.is_empty()) && pending.is_empty()
 }

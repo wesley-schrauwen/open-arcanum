@@ -7,8 +7,11 @@ license = "MIT"
 [features]
 # Exposes `test_util` (synthetic .art builder, RLE encoder) to other crates' tests.
 test-util = []
+# Adds Serialize/Deserialize to types sent over the wire (map coordinates, etc.).
+serde = ["dep:serde"]
 
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
 
 [dev-dependencies]
 arcanum_vfs = { path = "../arcanum_vfs" }

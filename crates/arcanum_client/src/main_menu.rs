@@ -1,4 +1,5 @@
-//! The main menu: background art and five buttons labelled from `mes/MainMenu.mes`.
+//! The main menu and the Single Player menu: background art and a column of buttons labelled
+//! from `mes/MainMenu.mes`. Both menus share the panel and styling, as in the original.
 //!
 //! World space and UI are both authored against a 1080-unit-tall baseline (see
 //! [`crate::settings`]). The art keeps its aspect ratio and fills the height; wider windows
@@ -13,64 +14,150 @@ use bevy::prelude::*;
 use bevy::ui_widgets::{Activate, ActivateOnPress, Button};
 
 use crate::audio::MenuSounds;
-use crate::fonts::ArcanumFonts;
+use crate::fonts::{ArcanumFonts, ORIGINAL_SCALE, UiFont};
 use crate::mes_loader::MesAsset;
 use crate::resource_pack::paths::{backgrounds, text};
 use crate::settings::BASELINE_HEIGHT;
+use crate::widgets::{HoverText, WidgetsPlugin};
 
 /// Which screen is showing.
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum AppState {
     #[default]
     MainMenu,
+    /// The Single Player menu (New Game, Load Game, ...).
     SinglePlayer,
+    /// After New Game: pick a pre-made character or create your own (a text menu).
+    NewGameChoice,
+    /// The pre-made character picker (see [`crate::new_game`]).
+    NewGame,
+    /// Character creation (see [`crate::create_character`]).
+    CreateCharacter,
+    /// The character editor's stats page after creation (see [`crate::character_editor`]).
+    CharacterEditor,
+    /// The Load Game screen (see [`crate::load_game`]).
+    LoadGame,
+    /// The loading screen on the way into the game (see [`crate::loading`]).
+    Loading,
+    /// Placeholder for the game world.
+    InGame,
     Options,
     Credits,
 }
 
-/// What a main menu button does.
+/// What a menu button does.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
+    // Main menu
     SinglePlayer,
-    MultiPlayer,
     Options,
     Credits,
     ExitGame,
+    // Single Player menu
+    NewGame,
+    LoadGame,
+    /// Resumes the most recent save. Replaces the original's Last Save.
+    Continue,
+    /// Co-op play (see `plans/multiplayer.md`); not built yet.
+    Multiplayer,
+    /// Back to the main menu.
+    Cancel,
+    // New Game choice
+    /// The pre-made character picker.
+    PickCharacter,
+    /// Character creation (not built yet).
+    CreateCharacter,
+    /// Back to the Single Player menu.
+    BackToSinglePlayer,
 }
 
-/// Main menu entries, top to bottom, with their message ids in `MainMenu.mes`.
-pub const MENU_ENTRIES: [(u32, MenuAction); 5] = [
+impl MenuAction {
+    /// False for entries whose feature does not exist yet: shown dimmed, not clickable.
+    pub fn is_available(self) -> bool {
+        !matches!(self, Self::Continue | Self::Multiplayer)
+    }
+
+    /// Our own label where it replaces the game's text: the main menu's "Single Player"
+    /// (`MainMenu.mes` 10) reads "Play", since there is no multiplayer entry to tell it apart from.
+    pub fn label_override(self) -> Option<&'static str> {
+        match self {
+            Self::SinglePlayer => Some("Play"),
+            // The game's own text (`MainMenu.mes` 11) is "MultiPlayer".
+            Self::Multiplayer => Some("Multiplayer"),
+            _ => None,
+        }
+    }
+}
+
+/// Main menu entries, top to bottom, with their message ids in `MainMenu.mes`. The original's
+/// MultiPlayer (11) is left out.
+pub const MENU_ENTRIES: [(u32, MenuAction); 4] = [
     (10, MenuAction::SinglePlayer),
-    (11, MenuAction::MultiPlayer),
     (12, MenuAction::Options),
     (13, MenuAction::Credits),
     (14, MenuAction::ExitGame),
 ];
 
 /// Message ids of [`MENU_ENTRIES`], in order.
-pub const MENU_ENTRY_IDS: [u32; 5] = [10, 11, 12, 13, 14];
+pub const MENU_ENTRY_IDS: [u32; 4] = [10, 12, 13, 14];
 
-/// Classic dimmed gold for menu text, and the brighter gold for the hovered entry.
-pub const TEXT_COLOR: Color = Color::srgb(0.75, 0.65, 0.45);
-pub const HOVER_COLOR: Color = Color::srgb(1.0, 0.9, 0.7);
+/// Play menu entries (the original's Single Player menu), top to bottom, with their message ids
+/// in `MainMenu.mes`. The original's View Intro (53) is left out, Continue (34, from the in-game
+/// menu) takes the place of Last Save (52), and Multiplayer (11) is added below it.
+pub const SINGLE_PLAYER_ENTRIES: [(u32, MenuAction); 5] = [
+    (50, MenuAction::NewGame),
+    (51, MenuAction::LoadGame),
+    (34, MenuAction::Continue),
+    (11, MenuAction::Multiplayer),
+    (54, MenuAction::Cancel),
+];
+
+/// The New Game choice, top to bottom, with message ids in `MainMenu.mes` ("Pick New or
+/// Pregen": Pick Character, New Character, Cancel). Confirmed in Arcanum.exe: window record
+/// 0x5c4bb0 (table index 11, background 329 `MainMenuBack`, first id 420, 3 entries; buttons at
+/// 0x5c4b20 lead to the picker window 13 and character creation window 12).
+pub const NEW_GAME_CHOICE_ENTRIES: [(u32, MenuAction); 3] = [
+    (420, MenuAction::PickCharacter),
+    (421, MenuAction::CreateCharacter),
+    (422, MenuAction::BackToSinglePlayer),
+];
+
+/// The menu shown in `state`, if it is a menu.
+pub fn menu_entries(state: AppState) -> Option<&'static [(u32, MenuAction)]> {
+    match state {
+        AppState::MainMenu => Some(&MENU_ENTRIES),
+        AppState::SinglePlayer => Some(&SINGLE_PLAYER_ENTRIES),
+        AppState::NewGameChoice => Some(&NEW_GAME_CHOICE_ENTRIES),
+        _ => None,
+    }
+}
+
+/// Menu text in the original's dark red, and the much brighter red of the hovered entry.
+/// Measured from the solid strokes in screenshots of the original Single Player menu
+/// ("Load Game" unhovered, "New Game" hovered).
+pub const TEXT_COLOR: Color = Color::srgb_u8(96, 28, 20);
+pub const HOVER_COLOR: Color = Color::srgb_u8(184, 48, 33);
+/// Entries that cannot be used yet.
+pub const DISABLED_COLOR: Color = Color::srgb_u8(58, 42, 36);
 
 // Layout, measured on the original 800x600 art (pixels from its top-left corner), then scaled to
 // the 1080 baseline. Replacement art with a different layout needs new numbers here.
-const ART_HEIGHT: f32 = 600.0;
-const ART_SCALE: f32 = BASELINE_HEIGHT / ART_HEIGHT;
+const ART_SCALE: f32 = ORIGINAL_SCALE;
 /// Horizontal centre of the framed panel, relative to the middle of the art.
 pub(crate) const PANEL_CENTER_OFFSET_X: f32 = 12.0 * ART_SCALE;
 pub(crate) const PANEL_WIDTH: f32 = 400.0 * ART_SCALE;
 const ROW_HEIGHT: f32 = 55.0 * ART_SCALE;
 /// Top of the first row.
 pub(crate) const PANEL_TOP: f32 = (145.0 - 55.0 / 2.0) * ART_SCALE;
-pub(crate) const FONT_SIZE: f32 = 26.0 * ART_SCALE;
+/// Row position (0-based, in rows) of each menu's last entry (Exit Game / Cancel): the bottom of
+/// the panel, kept clear of the frame's lower ornament.
+pub const BOTTOM_ROW: f32 = 4.7;
 
-/// The text node inside a menu button, tagged with its message id.
+/// A menu entry's text, tagged with its message id. The text entity is also the button.
 #[derive(Component)]
 pub struct MenuLabel(pub u32);
 
-/// Root of the main menu's UI; despawned when leaving [`AppState::MainMenu`].
+/// Root of a menu's UI (main or Single Player); despawned when leaving its state.
 #[derive(Component)]
 pub struct OnMainMenu;
 
@@ -83,9 +170,13 @@ pub struct FitToBaseline;
 #[derive(Resource)]
 pub struct MenuText(pub Handle<MesAsset>);
 
-/// Present while the main menu buttons still need spawning (waiting for `MainMenu.mes`).
+/// Present while a menu's buttons still need spawning (waiting for `MainMenu.mes`).
 #[derive(Resource)]
 struct PendingMenu;
+
+fn request_menu(mut commands: Commands) {
+    commands.insert_resource(PendingMenu);
+}
 
 pub struct MainMenuPlugin;
 
@@ -94,18 +185,14 @@ impl Plugin for MainMenuPlugin {
         app.init_state::<AppState>()
             .insert_resource(ClearColor(Color::BLACK))
             .add_systems(Startup, setup_menu)
-            .add_systems(OnEnter(AppState::MainMenu), |mut commands: Commands| {
-                commands.insert_resource(PendingMenu)
-            })
-            .add_systems(
-                Update,
-                (
-                    fit_background,
-                    spawn_menu.run_if(in_state(AppState::MainMenu)).run_if(resource_exists::<PendingMenu>),
-                    highlight_hovered,
-                ),
-            )
+            .add_systems(OnEnter(AppState::MainMenu), request_menu)
+            .add_systems(OnEnter(AppState::SinglePlayer), request_menu)
+            .add_systems(OnEnter(AppState::NewGameChoice), request_menu)
+            .add_systems(Update, (fit_background, spawn_menu.run_if(resource_exists::<PendingMenu>)))
             .add_observer(on_activate);
+        if !app.is_plugin_added::<WidgetsPlugin>() {
+            app.add_plugins(WidgetsPlugin);
+        }
     }
 }
 
@@ -156,14 +243,20 @@ pub(crate) fn panel_node() -> Node {
     }
 }
 
-/// Spawns the button column once `MainMenu.mes` has loaded.
+/// Spawns the current menu's button column once `MainMenu.mes` has loaded.
 fn spawn_menu(
     mut commands: Commands,
+    state: Res<State<AppState>>,
     menu_text: Res<MenuText>,
     mes: Res<Assets<MesAsset>>,
     assets: Res<AssetServer>,
     fonts: Option<Res<ArcanumFonts>>,
 ) {
+    let state = *state.get();
+    let Some(entries) = menu_entries(state) else {
+        commands.remove_resource::<PendingMenu>();
+        return;
+    };
     let Some(mes) = mes.get(&menu_text.0) else {
         if let Some(bevy::asset::LoadState::Failed(err)) = assets.get_load_state(&menu_text.0) {
             error!("cannot load {}: {err}", text::MAIN_MENU);
@@ -174,52 +267,44 @@ fn spawn_menu(
     let fonts = fonts.map(|f| f.clone()).unwrap_or_default();
 
     commands
-        .spawn((OnMainMenu, DespawnOnExit(AppState::MainMenu), panel_node()))
+        .spawn((OnMainMenu, DespawnOnExit(state), panel_node()))
         .with_children(|column| {
-            for (id, action) in MENU_ENTRIES {
-                let Some(label) = mes.get(id) else {
+            let last = entries.len().saturating_sub(1);
+            for (index, &(id, action)) in entries.iter().enumerate() {
+                let Some(label) = action.label_override().or_else(|| mes.get(id)) else {
                     warn!("{} has no message {id}", text::MAIN_MENU);
                     continue;
                 };
+                // The row only spaces the entries out. The button is the text itself, so hover and
+                // clicks only register over the words, not across the whole panel width.
+                // The last entry (Exit Game / Cancel) sits at the bottom of the panel.
+                let gap = if index == last { (BOTTOM_ROW - index as f32).max(0.0) * ROW_HEIGHT } else { 0.0 };
                 column
-                    .spawn((
-                        action,
-                        Button,
-                        ActivateOnPress,
-                        Hovered::default(),
-                        Node {
-                            height: Val::Px(ROW_HEIGHT),
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            ..default()
-                        },
-                    ))
-                    .with_child((MenuLabel(id), Text::new(label), fonts.serif(FONT_SIZE), TextColor(TEXT_COLOR)));
+                    .spawn(Node {
+                        height: Val::Px(ROW_HEIGHT),
+                        margin: UiRect::top(Val::Px(gap)),
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        let mut text = row.spawn((MenuLabel(id), action));
+                        if action.is_available() {
+                            text.insert((
+                                Button,
+                                ActivateOnPress,
+                                Hovered::default(),
+                                HoverText { normal: TEXT_COLOR, hover: HOVER_COLOR },
+                                TextColor(TEXT_COLOR),
+                            ));
+                        } else {
+                            text.insert(TextColor(DISABLED_COLOR));
+                        }
+                        fonts.insert_text(&mut text, label, UiFont::Large);
+                    });
             }
         });
     commands.remove_resource::<PendingMenu>();
-}
-
-/// Brightens a button's text while hovered and plays the hover sound when the pointer enters.
-fn highlight_hovered(
-    mut commands: Commands,
-    buttons: Query<(&Hovered, &Children), (Changed<Hovered>, With<MenuAction>)>,
-    mut colors: Query<&mut TextColor>,
-    sounds: Option<Res<MenuSounds>>,
-) {
-    for (hovered, children) in &buttons {
-        let color = if hovered.get() { HOVER_COLOR } else { TEXT_COLOR };
-        for child in children {
-            if let Ok(mut text_color) = colors.get_mut(*child) {
-                text_color.0 = color;
-            }
-        }
-        if hovered.get()
-            && let Some(sounds) = &sounds
-        {
-            sounds.play_hover(&mut commands);
-        }
-    }
 }
 
 /// Runs a menu button's action when it is pressed.
@@ -231,7 +316,10 @@ fn on_activate(
     mut next_state: ResMut<NextState<AppState>>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let Ok(action) = actions.get(activate.entity) else { return };
+    let Ok(&action) = actions.get(activate.entity) else { return };
+    if !action.is_available() {
+        return;
+    }
     if let Some(sounds) = &sounds {
         sounds.play_click(&mut commands);
     }
@@ -239,9 +327,19 @@ fn on_activate(
         MenuAction::SinglePlayer => next_state.set(AppState::SinglePlayer),
         MenuAction::Options => next_state.set(AppState::Options),
         MenuAction::Credits => next_state.set(AppState::Credits),
-        MenuAction::MultiPlayer => info!("multiplayer is not implemented"),
         MenuAction::ExitGame => {
             exit.write(AppExit::Success);
         }
+        MenuAction::NewGame => next_state.set(AppState::NewGameChoice),
+        MenuAction::PickCharacter => next_state.set(AppState::NewGame),
+        MenuAction::BackToSinglePlayer => next_state.set(AppState::SinglePlayer),
+        MenuAction::CreateCharacter => {
+            // A fresh character each time New Character is chosen.
+            commands.insert_resource(crate::character_host::CharacterHost::default());
+            next_state.set(AppState::CreateCharacter);
+        }
+        MenuAction::Cancel => next_state.set(AppState::MainMenu),
+        MenuAction::LoadGame => next_state.set(AppState::LoadGame),
+        MenuAction::Continue | MenuAction::Multiplayer => {}
     }
 }
