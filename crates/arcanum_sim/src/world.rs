@@ -11,13 +11,14 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 
+use arcanum_formats::art_id::ArtId;
 use arcanum_formats::map::{MapProperties, SectorId, TileLoc};
 use arcanum_formats::sector::Sector;
-use arcanum_rules::CharacterSheet;
+use arcanum_rules::{CharacterSheet, MALE};
 use arcanum_vfs::Vfs;
 use bevy_ecs::prelude::*;
 
-use crate::{EntityKind, LedgerDelta, NetId, NetIds, Outbox, PlayerId, Session, SessionPlayer, WorldState};
+use crate::{EntityKind, Gait, LedgerDelta, NetId, NetIds, Outbox, PlayerId, Session, SessionPlayer, SimRules, WorldState, pc_art};
 
 /// Sectors loaded on each side of a PC's sector (1 = a 3 x 3 block).
 pub const SECTOR_RADIUS: u32 = 1;
@@ -29,6 +30,20 @@ pub struct SimVfs(pub Arc<RwLock<Vfs>>);
 /// A tile position, for entities on the map.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position(pub TileLoc);
+
+/// How a critter looks and how fast it walks: its art id and speed stat, as clients get them
+/// in its `Spawn`.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Appearance {
+    pub art: ArtId,
+    pub speed: i32,
+}
+
+impl Appearance {
+    pub fn spawn(self, net_id: NetId, kind: EntityKind, position: TileLoc) -> LedgerDelta {
+        LedgerDelta::Spawn { net_id, kind, position, art: self.art.0, speed: self.speed }
+    }
+}
 
 /// The player who controls this PC.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +131,8 @@ pub fn boot_world(
     mut ids: ResMut<NetIds>,
     mut session: ResMut<Session>,
     mut outbox: ResMut<Outbox>,
-    pcs: Query<(&NetId, &PlayerControlled, &Position)>,
+    rules: Res<SimRules>,
+    pcs: Query<(&NetId, &PlayerControlled, &Position, &Appearance)>,
 ) {
     let Some(save) = &world.0 else { return };
     let vfs_guard = vfs.as_ref().and_then(|v| v.0.read().ok());
@@ -124,25 +140,28 @@ pub fn boot_world(
     if map.name.as_deref() != Some(save.map.as_str()) {
         map.open(vfs, &save.map);
     }
-    let mut existing: Vec<(NetId, PlayerId, TileLoc)> = pcs.iter().map(|(id, p, pos)| (*id, p.0, pos.0)).collect();
+    let mut existing: Vec<(NetId, PlayerId, TileLoc, Appearance)> = pcs.iter().map(|(id, p, pos, look)| (*id, p.0, pos.0, *look)).collect();
     for (&player, saved) in &save.players {
-        if existing.iter().any(|(_, p, _)| *p == player) {
+        if existing.iter().any(|(_, p, ..)| *p == player) {
             continue;
         }
         let net_id = ids.0.allocate();
-        commands.spawn((net_id, PlayerControlled(player), Position(saved.position), Sheet(saved.blueprint.sheet.clone())));
+        let sheet = &saved.blueprint.sheet;
+        let look = Appearance { art: pc_art(sheet.race, sheet.gender == MALE), speed: rules.0.derived(sheet).speed };
+        let gait = Gait::load(look.art, look.speed, |p| vfs.and_then(|v| v.read(p).ok()));
+        commands.spawn((net_id, PlayerControlled(player), Position(saved.position), Sheet(sheet.clone()), look, gait));
         map.load_around(vfs, saved.position);
         session.players.insert(player, SessionPlayer::InWorld(net_id));
         // Everyone already here learns of the new PC; the new PC's player learns of everyone.
         outbox.0.push((player, LedgerDelta::EnterMap { map: save.map.clone() }));
-        let spawn = LedgerDelta::Spawn { net_id, kind: EntityKind::Pc { player }, position: saved.position };
+        let spawn = look.spawn(net_id, EntityKind::Pc { player }, saved.position);
         for &other in session.players.keys() {
             outbox.0.push((other, spawn.clone()));
         }
-        for &(id, other, position) in &existing {
-            outbox.0.push((player, LedgerDelta::Spawn { net_id: id, kind: EntityKind::Pc { player: other }, position }));
+        for &(id, other, position, other_look) in &existing {
+            outbox.0.push((player, other_look.spawn(id, EntityKind::Pc { player: other }, position)));
         }
-        existing.push((net_id, player, saved.position));
+        existing.push((net_id, player, saved.position, look));
     }
 }
 
@@ -286,9 +305,28 @@ mod tests {
         sim.receive([(PlayerId(player), crate::PlayerIntent::Move { seq, path })]);
     }
 
-    /// Ticks for `tiles` steps at walking speed, rounded up.
+    /// Ticks for `tiles` steps at the slowest step of the gait these PCs get (a human's; the
+    /// test data has no walk art), rounded up.
     fn ticks_for(tiles: usize) -> usize {
-        (tiles as f64 * crate::TICK_HZ / crate::WALK_TILES_PER_SECOND).ceil() as usize + 1
+        let gait = crate::Gait::human(crate::walk_fps(8, 0));
+        let slowest = gait.step_seconds(TileLoc { x: 1, y: 0 }, TileLoc { x: 0, y: 1 });
+        (tiles as f64 * crate::TICK_HZ * slowest).ceil() as usize + 1
+    }
+
+    #[test]
+    fn a_step_takes_as_long_as_the_gait_says() {
+        let dir = tempfile::tempdir().unwrap();
+        write_map(dir.path());
+        let mut sim = booted(dir.path(), save(&[(7, "A", TileLoc { x: 70, y: 80 })]));
+        sim.take_deltas();
+        let (from, to) = (TileLoc { x: 70, y: 80 }, TileLoc { x: 69, y: 80 });
+        let seconds = crate::Gait::human(crate::walk_fps(8, 0)).step_seconds(from, to);
+        let ticks = (seconds * crate::TICK_HZ).ceil() as usize;
+        send_move(&mut sim, 7, 1, &[(70, 80), (69, 80)]);
+        walk_ticks(&mut sim, ticks - 1);
+        assert_eq!(position(&mut sim, 7), from, "{ticks} ticks needed");
+        walk_ticks(&mut sim, 1);
+        assert_eq!(position(&mut sim, 7), to);
     }
 
     #[test]

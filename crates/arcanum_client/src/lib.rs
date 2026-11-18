@@ -1,5 +1,7 @@
 //! Arcanum client building blocks: Bevy asset integration for the game's VFS.
 
+pub mod actors;
+pub mod animation;
 pub mod art_loader;
 pub mod audio;
 pub mod bitmap_text;

@@ -29,8 +29,9 @@ pub enum LedgerDelta {
     /// The player is now on `map` (a folder under `maps/`). Sent before the player's PC spawns:
     /// the client reads the map's unchanged content from its own copy of the game data.
     EnterMap { map: String },
-    /// An entity appeared.
-    Spawn { net_id: NetId, kind: EntityKind, position: TileLoc },
+    /// An entity appeared. `art` is its art id (critters: standing, facing the camera) and
+    /// `speed` its speed stat, from which clients time its walk ([`Gait`](crate::Gait)).
+    Spawn { net_id: NetId, kind: EntityKind, position: TileLoc, art: u32, speed: i32 },
     /// An entity started along a path.
     Move { net_id: NetId, path: Vec<TileLoc> },
     /// The entity stopped at `position`: the move numbered `seq` (its player's numbering) was
@@ -50,7 +51,7 @@ mod tests {
     fn deltas_serialise_round_trip() {
         let deltas = [
             LedgerDelta::CharacterUpdate { player: PlayerId(7), ack: 3, creation: Creation::default() },
-            LedgerDelta::Spawn { net_id: NetId(1), kind: EntityKind::Pc { player: PlayerId(7) }, position: TileLoc { x: 3, y: 4 } },
+            LedgerDelta::Spawn { net_id: NetId(1), kind: EntityKind::Pc { player: PlayerId(7) }, position: TileLoc { x: 3, y: 4 }, art: 0x2800_2000, speed: 8 },
             LedgerDelta::Move { net_id: NetId(1), path: vec![TileLoc { x: 3, y: 5 }, TileLoc { x: 4, y: 6 }] },
             LedgerDelta::Tick(12),
         ];

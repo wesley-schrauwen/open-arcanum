@@ -23,10 +23,7 @@ use std::collections::{HashSet, VecDeque};
 use arcanum_formats::map::TileLoc;
 use bevy_ecs::prelude::*;
 
-use crate::{LedgerDelta, LoadedMap, NetId, Outbox, PlayerControlled, PlayerId, Position, Session, SessionPlayer, TICK_HZ, Walkable, WorldState, adjacent, step_allowed};
-
-/// Walking speed. A placeholder until it is matched to the original's walk animation.
-pub const WALK_TILES_PER_SECOND: f64 = 3.5;
+use crate::{Gait, LedgerDelta, LoadedMap, NetId, Outbox, PlayerControlled, PlayerId, Position, Session, SessionPlayer, TICK_HZ, Walkable, WorldState, adjacent, step_allowed, walk_fps};
 
 /// The longest path the host takes in one move.
 pub const MAX_PATH_STEPS: usize = 256;
@@ -85,7 +82,7 @@ pub struct Walking {
     pub seq: u32,
     /// Tiles still to step on.
     pub steps: VecDeque<TileLoc>,
-    /// Progress towards the next tile, in tiles.
+    /// Seconds spent on the step to the next tile.
     pub progress: f64,
 }
 
@@ -131,6 +128,8 @@ pub fn apply_moves(
     }
 }
 
+type WalkerQuery<'a> = (Entity, &'a NetId, &'a mut Position, &'a PlayerControlled, Option<&'a Gait>, Option<&'a mut Walking>);
+
 /// Steps walking PCs along their paths, in net id order, checking each step against the map
 /// just before it is taken (see the module docs). A PC that reaches the end or cannot go on stops, and its
 /// position goes into the save.
@@ -140,17 +139,21 @@ pub fn walk(
     session: Res<Session>,
     mut outbox: ResMut<Outbox>,
     mut world: ResMut<WorldState>,
-    mut pcs: Query<(Entity, &NetId, &mut Position, &PlayerControlled, Option<&mut Walking>)>,
+    mut pcs: Query<WalkerQuery>,
 ) {
-    let mut order: Vec<(NetId, Entity)> = pcs.iter().filter(|pc| pc.4.is_some()).map(|(e, id, ..)| (*id, e)).collect();
+    let mut order: Vec<(NetId, Entity)> = pcs.iter().filter(|pc| pc.5.is_some()).map(|(e, id, ..)| (*id, e)).collect();
     order.sort();
     for (net_id, entity) in order {
-        let Ok((_, _, mut position, player, Some(mut walking))) = pcs.get_mut(entity) else { continue };
-        walking.progress += WALK_TILES_PER_SECOND / TICK_HZ;
+        let Ok((_, _, mut position, player, gait, Some(mut walking))) = pcs.get_mut(entity) else { continue };
+        let gait = gait.copied().unwrap_or(Gait::human(walk_fps(8, 0)));
+        walking.progress += 1.0 / TICK_HZ;
         let mut stopped = false;
-        while walking.progress >= 1.0 {
-            let Some(&next) = walking.steps.front() else { break };
+        while let Some(&next) = walking.steps.front() {
             let at = position.0;
+            let needed = gait.step_seconds(at, next);
+            if walking.progress < needed {
+                break;
+            }
             if !step_allowed(&*map, at, next) {
                 let correction = LedgerDelta::MoveCorrection { net_id, seq: walking.seq, position: at };
                 outbox.0.extend(session.players.keys().map(|&p| (p, correction.clone())));
@@ -159,7 +162,7 @@ pub fn walk(
             }
             walking.steps.pop_front();
             position.0 = next;
-            walking.progress -= 1.0;
+            walking.progress -= needed;
         }
         if stopped || walking.steps.is_empty() {
             commands.entity(entity).remove::<Walking>();

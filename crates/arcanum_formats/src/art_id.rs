@@ -18,7 +18,7 @@
 //! |---|---|---|
 //! | 0 | tile | 0x4eae90 -> 0x4eaf70 |
 //! | 1 | wall | 0x4eceb0 -> 0x4ecfc0 |
-//! | 2 | critter | not decoded |
+//! | 2 | critter | 0x41dc58 branch ([`CritterArt`]) |
 //! | 3 | portal | 0x4ec620 |
 //! | 4 | scenery | 0x41db89 branch |
 //! | 5, 6, 7 | interface, item, container | not decoded |
@@ -27,8 +27,7 @@
 //! | 0xB | facade (sector tiles that are not terrain) | 0x4ec3f0 |
 //! | 0xC, 0xD, 0xE | monster, unique npc, eye candy | not decoded |
 //!
-//! Item, container, critter, monster, unique npc, interface and eye candy ids decode to a kind
-//! only; [`ArtIndex::path`] returns `None` for them (their rules are not verified against data).
+//! Item, container, monster, unique npc, interface and eye candy ids decode to a kind only; [`ArtIndex::path`] returns `None` for them (their rules are not verified against data).
 //!
 //! # Bit layouts
 //!
@@ -44,6 +43,7 @@
 //! - **Scenery**: number 19..27, rotation 11..13, category 6..10 (0x504300).
 //! - **Facade** (0x504a60): bits 17..24 are the low 8 bits of the facade number, bit 27 adds 0x100.
 //!   The other fields (tile index in the facade bits 1..10, flag bit 0) do not affect the path.
+//! - **Critter**: see [`CritterArt`].
 //! - **Roof / light**: number 19..27. Light also has rotation at bits 9..11 and a shadow flag in
 //!   bit 0 (0x504790).
 //!
@@ -103,7 +103,9 @@
 //! **Light**, `art/light/light.mes` (0x5bb8a4): key = number. Path `art/light/<name>.art`, or with
 //! bit 0 set `art/light/<name>_s<n>.art` with `n = ((id >> 4) & 0x1f) / 8` (0x4ed29c).
 //!
-//! Not resolved: facade sub-fields, item/critter/monster paths, container paths (type 7 has the
+//! **Critter**: see [`CritterArt::path`]; no index file.
+//!
+//! Not resolved: facade sub-fields, item/monster/unique npc paths, container paths (type 7 has the
 //! scenery layout and `art/container/container.mes`, untested).
 
 use std::collections::HashMap;
@@ -233,6 +235,121 @@ impl ArtId {
     }
 }
 
+/// The fields of a critter art id (type 2), as the engine's builder 0x503c00 packs them.
+///
+/// | Bits | Field | Accessor |
+/// |---|---|---|
+/// | 27 | gender: 0 female, 1 male | 0x503fb0 |
+/// | 24..26 | art body ([`CRITTER_BODIES`]) | 0x503ea0 |
+/// | 20..23 | armour ([`CRITTER_ARMOUR`]) | 0x504030 |
+/// | 19 | flag, `X` (0) or `S` (1) in the file name; meaning unknown | 0x504150 |
+/// | 14..18 | frame | 0x502b50 |
+/// | 11..13 | rotation | 0x502880 |
+/// | 6..10 | animation ([`ANIM_STAND`], [`ANIM_WALK`], ...) | 0x503e20 |
+/// | 4..5 | palette | 0x502d80 |
+/// | 0..3 | weapon ([`CRITTER_WEAPONS`]) | 0x5040d0 |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct CritterArt {
+    pub male: bool,
+    pub body: u32,
+    pub armour: u32,
+    pub flag_s: bool,
+    pub frame: u32,
+    pub rotation: u32,
+    pub anim: u32,
+    pub palette: u32,
+    pub weapon: u32,
+}
+
+/// Art body codes (0x5a11a4): human, dwarf, gnome and halfling, half-ogre, elf.
+pub const CRITTER_BODIES: [&str; 5] = ["hm", "df", "gh", "hg", "ef"];
+/// Armour codes (0x5a11b8).
+pub const CRITTER_ARMOUR: [&str; 9] = ["uw", "v1", "la", "cm", "pm", "rb", "pc", "bn", "cd"];
+/// Weapon letters (0x5a11dc).
+pub const CRITTER_WEAPONS: &[u8; 15] = b"abcdefghijkxynz";
+/// Standing still (0x40d952, 0x45ef13).
+pub const ANIM_STAND: u32 = 0;
+/// Walking (0x42edc0, speed table 0x437990).
+pub const ANIM_WALK: u32 = 1;
+/// Running (same functions as walking).
+pub const ANIM_RUN: u32 = 6;
+
+impl CritterArt {
+    pub fn from_id(id: ArtId) -> Self {
+        let v = id.0;
+        Self {
+            male: v >> 27 & 1 == 1,
+            body: v >> 24 & 7,
+            armour: v >> 20 & 0xf,
+            flag_s: v >> 19 & 1 == 1,
+            frame: v >> 14 & 0x1f,
+            rotation: v >> 11 & 7,
+            anim: v >> 6 & 0x1f,
+            palette: v >> 4 & 3,
+            weapon: v & 0xf,
+        }
+    }
+
+    pub fn id(self) -> ArtId {
+        ArtId(
+            2 << 28
+                | u32::from(self.male) << 27
+                | (self.body & 7) << 24
+                | (self.armour & 0xf) << 20
+                | u32::from(self.flag_s) << 19
+                | (self.frame & 0x1f) << 14
+                | (self.rotation & 7) << 11
+                | (self.anim & 0x1f) << 6
+                | (self.palette & 3) << 4
+                | (self.weapon & 0xf),
+        )
+    }
+
+    /// The id the engine actually loads (normaliser 0x41d510, type-2 case 0x41d5b1): elf women
+    /// use the human woman's body (there is no `eff` art), and plate armour (4, 6) is male, with
+    /// elves on the human body and gnomes and halflings on the dwarf's. The normaliser's further
+    /// remap of animations a body lacks (table built at 0x41ceed) is not reproduced.
+    pub fn normalised(mut self) -> Self {
+        if self.body == 4 && !self.male {
+            self.body = 0;
+        }
+        if matches!(self.armour, 4 | 6) {
+            self.male = true;
+            self.body = match self.body {
+                4 => 0,
+                2 => 1,
+                b => b,
+            };
+        }
+        self
+    }
+
+    /// The `.art` path of the [normalised](Self::normalised) id (sprintf at 0x41dd33, format
+    /// `art\critter\%s%c\%s%c%s%c%c%c.art`):
+    /// `art/critter/<body><gender>/<body><gender><armour><x|s><weapon><anim>.art`. The gender
+    /// letter is `x` for armour 4 and 6 (plate) and for animation 24, which also uses armour
+    /// `xx`. Weapon 7 with the `s` flag is `d`. Out-of-range fields use `?` (no such file).
+    pub fn path(self) -> String {
+        self.normalised().raw_path()
+    }
+
+    fn raw_path(self) -> String {
+        let body = CRITTER_BODIES.get(self.body as usize).copied().unwrap_or("??");
+        let mut armour = CRITTER_ARMOUR.get(self.armour as usize).copied().unwrap_or("??");
+        let mut gender = if self.male { 'm' } else { 'f' };
+        if matches!(self.armour, 4 | 6) {
+            gender = 'x';
+        }
+        if self.anim == 24 {
+            (armour, gender) = ("xx", 'x');
+        }
+        let s = if self.flag_s { 's' } else { 'x' };
+        let weapon = if self.weapon == 7 && self.flag_s { 'd' } else { CRITTER_WEAPONS.get(self.weapon as usize).map_or('?', |&c| c as char) };
+        let anim = (b'a' + self.anim as u8) as char;
+        format!("art/critter/{body}{gender}/{body}{gender}{armour}{s}{weapon}{anim}.art")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArtIndexError {
     /// An index file is not in the archives.
@@ -351,6 +468,7 @@ impl ArtIndex {
                     format!("art/light/{name}.art")
                 })
             }
+            ArtKind::Critter => Some(CritterArt::from_id(id).path()),
             _ => None,
         }
     }
@@ -585,9 +703,35 @@ mod tests {
     fn no_art_and_undecoded_kinds_are_none() {
         let i = index();
         assert_eq!(p(&i, ArtId::NONE), None);
-        for t in [2u32, 5, 6, 7, 8, 0xC, 0xD, 0xE, 0xF] {
+        for t in [5u32, 6, 7, 8, 0xC, 0xD, 0xE, 0xF] {
             assert_eq!(p(&i, ArtId(t << 28 | 0x1234)), None, "type {t}");
         }
+    }
+
+    #[test]
+    fn critter_id_to_path() {
+        let i = index();
+        // Lugard Bloodstone's prototype (dwarf man): standing, facing the camera.
+        let lugard = ArtId(0x2900_2000);
+        let c = CritterArt::from_id(lugard);
+        assert_eq!((c.male, c.body, c.armour, c.rotation, c.anim, c.weapon), (true, 1, 0, 4, ANIM_STAND, 0));
+        assert_eq!(c.id(), lugard, "round trip");
+        assert_eq!(p(&i, lugard).as_deref(), Some("art/critter/dfm/dfmuwxaa.art"));
+        let walk = CritterArt { anim: ANIM_WALK, armour: 7, ..c };
+        assert_eq!(walk.path(), "art/critter/dfm/dfmbnxab.art");
+        assert_eq!(CritterArt { male: false, body: 0, ..walk }.path(), "art/critter/hmf/hmfbnxab.art");
+        assert_eq!(CritterArt { armour: 6, ..walk }.path(), "art/critter/dfx/dfxpcxab.art", "plate: gender x");
+        assert_eq!(CritterArt { flag_s: true, weapon: 7, ..walk }.path(), "art/critter/dfm/dfmbnsdb.art");
+        assert_eq!(CritterArt { anim: 24, ..walk }.path(), "art/critter/dfx/dfxxxxay.art");
+        // Elf women use the human woman's art; plate puts elves on the human body and gnomes
+        // and halflings on the dwarf's.
+        let elf = CritterArt { body: 4, male: false, ..walk };
+        assert_eq!(elf.path(), "art/critter/hmf/hmfbnxab.art");
+        assert_eq!(CritterArt { male: true, ..elf }.path(), "art/critter/efm/efmbnxab.art");
+        assert_eq!(CritterArt { armour: 4, ..elf }.path(), "art/critter/hmx/hmxpmxab.art");
+        assert_eq!(CritterArt { body: 2, armour: 6, ..walk }.path(), "art/critter/dfx/dfxpcxab.art");
+        let all = CritterArt { male: true, body: 3, armour: 8, flag_s: true, frame: 31, rotation: 7, anim: 25, palette: 3, weapon: 14 };
+        assert_eq!(CritterArt::from_id(all.id()), all);
     }
 
     #[test]

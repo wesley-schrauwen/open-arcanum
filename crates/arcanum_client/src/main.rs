@@ -75,7 +75,21 @@ fn main() {
                 Some(arcanum_formats::map::TileLoc { x: x.trim().parse().ok()?, y: y.trim().parse().ok()? })
             }),
         })
-        .add_plugins((arcanum_client::sim_bridge::SimBridgePlugin, arcanum_client::WorldRenderPlugin));
+        .add_plugins((
+            arcanum_client::sim_bridge::SimBridgePlugin,
+            arcanum_client::WorldRenderPlugin,
+            arcanum_client::animation::AnimationPlugin,
+            arcanum_client::actors::ActorsPlugin,
+        ));
+
+    // Debugging aid until clicks move the PC: `DEBUG_ARCANUM_WALK=x,y` walks the PC to that
+    // tile once it is in the world.
+    if let Some(goal) = std::env::var("DEBUG_ARCANUM_WALK").ok().and_then(|v| {
+        let (x, y) = v.split_once(',')?;
+        Some(arcanum_formats::map::TileLoc { x: x.trim().parse().ok()?, y: y.trim().parse().ok()? })
+    }) {
+        app.add_systems(OnEnter(AppState::InGame), move |mut walk: ResMut<arcanum_client::actors::WalkLocalPc>| walk.goal = Some(goal));
+    }
 
     let start = match std::env::var(SCREEN_VAR).unwrap_or_default().to_ascii_lowercase().as_str() {
         "options" => Some(AppState::Options),

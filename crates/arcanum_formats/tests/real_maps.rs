@@ -362,3 +362,40 @@ fn start_map_tile_mask_presence() {
     eprintln!("no mask {none}, mask with any bit set {any_set}");
     assert_eq!((none, any_set), (32, 172));
 }
+
+/// Every critter art id (type 2) in the `.mob` NPCs and in the PC prototypes names a file, and
+/// the walk animation exists for every body and gender those ids use (elf women only through
+/// the engine's remap to the human woman's body: no archive has `art/critter/eff/`).
+#[test]
+fn critter_art_resolves() {
+    use arcanum_formats::art_id::{ANIM_WALK, ArtKind, CritterArt};
+    let (Some(archive), Some(vfs)) = (module_archive(), vfs()) else { return };
+    let index = art_index(&vfs);
+    let mut ids = BTreeMap::new();
+    for path in map_files(&archive, ".mob") {
+        let obj = Object::parse_instance(&archive.read(&path).unwrap()).unwrap();
+        if let Some(id) = obj.art_id().filter(|id| id.kind() == ArtKind::Critter) {
+            *ids.entry(id.0).or_insert(0usize) += 1;
+        }
+    }
+    let protos = game_dir().join("data/proto");
+    for n in 16086..=16098 {
+        let path = protos.join(format!("0{n} - PC.pro"));
+        let obj = Object::parse_prototype(&std::fs::read(&path).unwrap()).unwrap();
+        *ids.entry(obj.art_id().unwrap().0).or_insert(0) += 1;
+    }
+    let (mut missing, mut found) = (BTreeMap::new(), 0);
+    for (&id, &n) in &ids {
+        let art = CritterArt::from_id(ArtId(id));
+        for path in [index.path(ArtId(id)).unwrap(), CritterArt { anim: ANIM_WALK, frame: 0, ..art }.path()] {
+            if vfs.exists(&path) {
+                found += n;
+            } else {
+                *missing.entry(path).or_insert(0) += n;
+            }
+        }
+    }
+    eprintln!("critter ids: {} distinct, {found} paths found, missing: {missing:?}", ids.len());
+    assert!(found > 0);
+    assert!(missing.is_empty(), "{missing:?}");
+}

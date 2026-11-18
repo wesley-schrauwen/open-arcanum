@@ -1,23 +1,29 @@
 # Project notes (handoff)
 
 Working notes for whoever picks this up next, human or agent. Read this first, then `README.md`.
-Last updated: 2026-11-15 (character creation and the stats page).
+Last updated: 2026-11-18 (world milestone steps 2-5 done; step 6, `.art` animation, next).
 
 ## Handoff: start here
 
-- **Branch / PR stack.** Every change is an open PR stacked on the previous one, oldest first:
-  #9 (interactive menu, base `main`) → #10 → #11 → #12 → #13 → #14 → #15 → #16 → #17 → #18 → #19
-  (world milestone, another session's map/sector/object readers) → #20 (character creation) →
-  #21 (fonts) → #22 (name text field) → #23 (Play button, Multiplayer entry) → #24 (stats page,
-  branch `feat/stat-screen`, the newest; `git log` there has everything). Merge in order and
-  **retarget each PR to `main` before merging** (stacked PRs merged into their parent branch do
-  not reach `main`; this already bit once, fixed by #8).
-- **Work tree** is clean on `feat/stat-screen` at handoff; all branches are pushed.
-- **Not yet checked by eye:** the stats page (#24). Screenshots came out fully black late in the
-  session for every screen, even ones that worked the day before (display asleep/locked, not a
-  code change). Run `DEBUG_ARCANUM_SCREEN=charactereditor DEBUG_ARCANUM_SCREENSHOT=/tmp/x.png
-  cargo run -p arcanum_client` with the display awake and check the layout against the
-  original coordinates in "Character editor" below.
+- **`main` is behind.** `origin/main` ends at #9. PRs #10-#25 were merged on 2026-11-16, each
+  into its parent branch, so none of them reached `main` (the same mistake #8 fixed once).
+  The open stack is #26 (`feat/sim-net-scaffold`, base `main`, contains everything up to #25)
+  → #27 → #28 → #29 → #30 → #31 → #32 (`feat/world-objects`, the newest). Merging #26 into
+  `main` brings in #10-#25 as well. Then **retarget each next PR to `main` before merging it**.
+- **World milestone:** `plans/world_milestone.md` is the plan and records each step as built
+  (differences from the plan, what is not done). Steps 1-5 are done: map readers (#19), the
+  `arcanum_sim`/`arcanum_net` crates (#26), creation through the host and the initial save
+  (#27, #28), the host boots the map from the save (#29), pathfinding and movement validation
+  (#30), the client draws ground tiles (#31) and walls, portals and scenery (#32), the PC
+  stands and walks with the original's art and timing (step 6, `feat/art-animation`). Next:
+  step 7 (click to move, Milestone A).
+- **World debug start:** `DEBUG_ARCANUM_SCREEN=ingame` (character "Debug"), optionally
+  `DEBUG_ARCANUM_START=x,y` (e.g. `90330,84122`, a Shrouded Hills house) and
+  `DEBUG_ARCANUM_WALK=x,y` (the PC walks there).
+- **The stats page (#24)** was not checked by eye at its handoff; run
+  `DEBUG_ARCANUM_SCREEN=charactereditor DEBUG_ARCANUM_SCREENSHOT=/tmp/x.png cargo run -p
+  arcanum_client` and compare with "Character editor" below. (Screenshots come out black when
+  the display is asleep or locked.)
 - **Also unverified with a real mouse:** clicking outside the name field to unfocus it (tests use
   Enter), and the picker/creation arrows (fixed a full-screen layer swallowing clicks; owner to
   confirm in-game).
@@ -45,18 +51,22 @@ are not.
 Working end to end: `cargo run -p arcanum_client` opens a window and shows the original main menu
 at any supported resolution, with the original menu music, sounds and fonts. Play → New Game →
 Pick Character (pre-made picker) or New Character (creation, then the stats page) → loading
-screen → world placeholder. Load Game shows the original save screen (no saves exist yet).
-Options opens the original options screen, settings persist in `config.toml`. Credits and the
-world are placeholders. Esc goes back one level (not from the loading screen or while typing in
+screen → the world: the in-process host accepts the character, writes a save and boots the
+start map; the client draws its ground tiles, walls, portals and scenery round the PC (no PC
+sprite, no input yet). Load Game shows the original save screen (it does not list the new saves
+yet). Options opens the original options screen, settings persist in `config.toml`. Credits is a
+placeholder. Esc goes back one level (not from the loading screen or while typing in
 a text field).
 
 | Area | State |
 |---|---|
 | `.dat` archives | Done. Reader, layered VFS, override folder. |
 | `.mes` text | Done. Decoder + Bevy asset. |
-| `.art` sprites | Frame decode done (raw + RLE, palettes, 8 rotations). No animation playback. |
+| `.art` sprites | Frame decode done (raw + RLE, palettes, 8 rotations). Playback (`animation.rs`) for critters. |
 | Bevy integration | Done. VFS is Bevy's default asset source; `.art` → `Image`, `.mes` → `MesAsset`. |
-| Main menu | Play / Options / Credits / Exit Game ("Play" is our label for the original's Single Player). Play menu: New Game, Load Game, Continue (dimmed), Multiplayer (dimmed), Cancel. Each menu's last entry sits at the bottom of the panel. Credits and the world are placeholders. |
+| Main menu | Play / Options / Credits / Exit Game ("Play" is our label for the original's Single Player). Play menu: New Game, Load Game, Continue (dimmed), Multiplayer (dimmed), Cancel. Each menu's last entry sits at the bottom of the panel. Credits is a placeholder. |
+| Host / sim | `arcanum_sim` (headless Bevy app, 30 Hz tick): session, creation through host actions, `WorldSave` (JSON), map boot, A* pathfinding, move validation and host-side walking. `arcanum_net`: transport traits, loopback, `LocalHost`. See `plans/world_milestone.md`. |
+| World drawing | `world_render.rs` + `isometric.rs`: ground tiles, walls, portals, scenery in the original's order. `actors.rs` + `animation.rs`: PCs with stand/walk animation at the original's speed. No roofs, cutaway, effects or object animation yet. |
 | New Game flow | Choice menu (Pick Character / New Character / Cancel, `MainMenu.mes` 420-422) → pre-made picker (12 characters from their prototypes: portrait, name, gender, race, background title, story) → loading; or → character creation (name text field, portrait/gender/race/background arrows, initial stats, race description or background story) → stats page (spend 5 points on stats, hit points, fatigue; derived stats and resistances) → loading. See the sections below. |
 | Load Game screen | Original art and layout from Arcanum.exe's screen table (0x5c4560): top bar, `SaveLoadBackground`, bottom bar; Back/Load round buttons, Delete, info toggle, hover help in the bottom bar. Lists `SaveGames` (empty until saving exists; `DEBUG_ARCANUM_SCREEN=loadgame` uses example saves). Load goes through the loading screen to the world placeholder. No portraits/screenshots or delete confirmation yet. |
 | Loading screen | Scaffolded: `LoadRequest { next, assets, min_secs }` + `AppState::Loading`; waits for assets (failures warn and continue) and at least 1.5 s; `LoadingProgress` for a future bar. Shown entering the game only (owner's decision). |
@@ -66,14 +76,14 @@ a text field).
 | Fonts | Game bitmap fonts decoded and rendered (`BitmapText`, multi-line: wrap, `\n`, tab indents, whole-line clipping). Menu uses `Morph30Font`/`morph15font`; character screens add `Flare12Font` (`UiFont::Body`) with the original white/red tints. Override TTF still wins if present; built-in font as last resort. |
 | Game data formats | `.mes`, `.art`, fonts, `.dat`; objects (`arcanum_formats::object`: prototypes and instances, PC field tables from the engine's names); maps/sectors (#19). |
 | Resolutions | Done. 720p–8K, 4:3–2.4:1, `UiScale` from a 1080 baseline. |
-| Tests | 278 tests, 254 need no game data (synthetic archives/art/fonts, headless Bevy). |
-| Everything else | Not started: game screens, maps, critters, dialogue, scripts, saves. |
+| Tests | 369 `#[test]` functions; real-data tests skip without game data (synthetic archives/art/fonts, headless Bevy). |
+| Everything else | Not started: game screens, critter art, NPCs, dialogue, scripts, combat, UDP. |
 
 ### Git state
 
-`main` is current. On 2026-11-13 the stacked PRs #2–#7 were found to have merged only into their
-base branches; PR #8 merged `test/review-and-headless-tests` into `main` to bring everything in.
-Branch new work from `main`. When stacking PRs, merge bottom-up and retarget each PR to `main`
+`main` is behind (see Handoff). On 2026-11-13 the stacked PRs #2–#7 were found to have merged
+only into their base branches; PR #8 merged them into `main`. It happened again with #10-#25
+(2026-11-16). Branch new work from the newest branch of the open stack until it is merged. When stacking PRs, merge bottom-up and retarget each PR to `main`
 before merging it (or delete the merged base branch so GitHub retargets automatically).
 The old `feat/*` branches are fully merged and can be deleted.
 
@@ -90,6 +100,8 @@ crates/arcanum_vfs/              game data access, no Bevy dependency
   src/test_util.rs               DatBuilder: writes synthetic .dat files (feature "test-util")
 crates/arcanum_formats/          file format decoders, no Bevy dependency
   src/mes.rs                     MesFile: {id}{text} message files
+  src/map.rs                     map list (Rules/MapList.mes), map.prp, sector coordinates
+  src/art_id.rs                  art ids -> .art paths (tiles, walls, portals, scenery, ...)
   src/object.rs                  Object (prototype/instance, all 18 types), PlayerFile (.mpc), type numbers
   src/sector.rs                  Sector (.sec): lights, tiles, roofs, scripts, blocking mask, objects
   src/object_fields.rs           field tables per block (generated: tools/object_probe/gen_rust_fields.py)
@@ -106,6 +118,16 @@ crates/arcanum_rules/            character rules, no Bevy (shared by client and 
   src/tables.rs                  skill, tech, spell and schematic tables
   src/action.rs                  CharacterAction + RulesData::apply
   src/blueprint.rs               CharacterBlueprint, pre-made sheets, InvenSource parsing
+crates/arcanum_sim/              the host: headless Bevy app, no rendering
+  src/plugin.rs                  SimApp, SimPlugin, 30 Hz FixedUpdate tick
+  src/intent.rs, delta.rs        PlayerIntent (client -> host), LedgerDelta (host -> client)
+  src/session.rs, creation.rs    players, character creation by host-applied actions
+  src/save.rs                    WorldSave (save file = Load Game = join snapshot)
+  src/world.rs                   boot_world, LoadedMap (sectors round each PC), Walkable
+  src/pathfinding.rs             A* over tiles, shared with the client
+  src/movement.rs                check_path, host-side walking, MoveCorrection
+  src/gait.rs                    pc_art, walk_fps, Gait (step timing from the walk art)
+crates/arcanum_net/              transports: HostTransport/ClientTransport, loopback, LocalHost
 crates/arcanum_client/           the Bevy game
   src/main.rs                    app setup; DEBUG_ARCANUM_SCREENSHOT handling
   src/resource_pack.rs           ResourcePack (game dir, override, module) + VFS mount order + `paths::*`
@@ -128,10 +150,20 @@ crates/arcanum_client/           the Bevy game
   src/audio.rs                   MenuAudioPlugin: menu music, MenuSounds (hover/click)
   src/fonts.rs                   FontsPlugin: ArcanumFonts, UiFont, insert_text (picks TTF/bitmap/default)
   src/bitmap_text.rs             BitmapTextPlugin: font asset + loader, BitmapText rasterise/tint/fallback
+  src/text_field.rs              TextField (name entry), FocusedTextField
+  src/create_character.rs        character creation screen
+  src/character_editor.rs        stats page after creation
+  src/character_host.rs          client preview of the host's character
+  src/sim_bridge.rs              runs LocalHost in PostUpdate; LocalPc, LocalMap
+  src/isometric.rs               tile_to_world (the original's loc_to_xy)
+  src/world_render.rs            ClientMap; ground, wall, portal, scenery sprites and depth
+  src/animation.rs               ArtAnimation, FrameClock: .art frame playback
+  src/actors.rs                  PC sprites from Spawn/Move deltas, walking, WalkLocalPc
   tests/headless.rs              81 Bevy tests, no window/GPU/game data
   tests/vfs_assets.rs            real-data tests, incl. "every resource_pack path exists"
 assets/                          symlink to the local game install; gitignored, never commit
-plans/                           design plans for future work (combat_design.md: companion combat AI; companions.md: follower management; multiplayer.md: co-op architecture)
+plans/                           design plans (world_milestone.md: current milestone, steps as built; combat_design.md: companion combat AI; companions.md: follower management; multiplayer.md: co-op architecture)
+TODO.md                          things to pick up later (world drawing gaps, object blocking, one copy per machine, ...)
 ```
 
 ## Running
@@ -150,7 +182,9 @@ cargo test --workspace                              # real-data tests skip witho
 | `ARCANUM_FULLSCREEN` | `1`/`true` for borderless fullscreen. Overrides the saved value for this run only. |
 | `ARCANUM_CONFIG` | Path of the settings file to use instead of `<user config dir>/open-arcanum/config.toml` (macOS: `~/Library/Application Support/open-arcanum/`). |
 | `DEBUG_ARCANUM_SCREENSHOT` | Path; saves the window once the menu (or Options) is ready, then exits. Used to verify rendering. |
-| `DEBUG_ARCANUM_SCREEN` | `options`, `singleplayer`, `newgamechoice`, `newgame`, `createcharacter`, `charactereditor`, `loadgame` (with example saves) or `loading` (held for 60 s) opens straight onto that screen (for screenshots). Screenshots are taken 60 frames after the screen is ready; earlier captures came out black. |
+| `DEBUG_ARCANUM_START` | `x,y` tile; new games start there on the start map instead of 92958,82592. |
+| `DEBUG_ARCANUM_WALK` | `x,y` tile; the PC walks there on entering the world (until clicks do it). |
+| `DEBUG_ARCANUM_SCREEN` | `ingame` (character "Debug", through loading into the world), `options`, `singleplayer`, `newgamechoice`, `newgame`, `createcharacter`, `charactereditor`, `loadgame` (with example saves) or `loading` (held for 60 s) opens straight onto that screen (for screenshots). Screenshots are taken 60 frames after the screen is ready; earlier captures came out black. |
 
 ## Format knowledge
 
@@ -248,7 +282,7 @@ Recovered by inspecting data and by reverse engineering `Arcanum.exe` with the R
   "Known issues"). Type = `id >> 28`
   (0x502700): 0 tile, 1 wall, 3 portal, 4 scenery, 9 light, 0xA roof, 0xB facade (sector "tiles"
   of type 0xB); critter 2, item 6, container 7, monster 0xC, unique npc 0xD, interface 5 and eye
-  candy 0xE are not decoded. Index files (`ART_INDEX_FILES`): `art/tile/tilename.mes` (four lists
+  candy 0xE are not decoded (critters 2 now are: see "Critters on screen"). Index files (`ART_INDEX_FILES`): `art/tile/tilename.mes` (four lists
   by key range 0/100/200/300: outdoor/indoor x flippable/fixed), `art/wall/structure.mes`,
   `art/portal/portal.mes`, `art/scenery/scenery.mes` (key = category * 1000 + number),
   `art/facade/facadename.mes`, `art/roof/roofname.mes`, `art/light/light.mes`. Tile file name:
@@ -294,7 +328,14 @@ Recovered by inspecting data and by reverse engineering `Arcanum.exe` with the R
     - Wall cutaway: type-0 objects with field 0x27 & 6, wall rotation in {0, 1, 6, 7}, and
       0x439fa0(loc) set are skipped. This is presumably the cutaway near the PC.
     - Scale: field `blit_scale` is a percent, and flag 0x80 doubles the rect.
-- Not yet investigated: the engine's 5-rotation mirrored-sprite optimisation, item/critter/monster/container/interface art id paths, fonts
+- **Critters on screen** (`art_id::CritterArt`, `arcanum_sim::gait`, `actors.rs`; details and
+  addresses in `plans/world_milestone.md` → step 6). Art id fields: gender 27, body 24-26
+  (`hm df gh hg ef`), armour 20-23 (`uw v1 la cm pm rb pc bn cd`), s/x flag 19, frame 14-18,
+  rotation 11-13, anim 6-10 (0 stand, 1 walk, 6 run, 5 combat stance), palette 4-5, weapon 0-3.
+  Rotations run clockwise from screen-up (0) to up-left (7); 4 faces the camera. Walk speed is
+  frame deltas x frame rate from the speed stat. Critter palette index 0 (transparent) is blue,
+  so sprites need nearest sampling.
+- Not yet investigated: the engine's 5-rotation mirrored-sprite optimisation (unused: the data stores 8 rotations), item/monster/container/interface art id paths, fonts
   (`art/morph15font.art` and similar), sound formats, `.dlg`, `scr/` scripts, maps (`terrain/`,
   `modules/`), save games.
 
@@ -629,6 +670,9 @@ called it unused.)
 
 ## Suggested next steps
 
+0. World milestone (`plans/world_milestone.md`): step 7 click to move (Milestone A; the
+   client side of walking exists as `WalkLocalPc`), step 8 UDP and a second client (A2). Object blocking on the
+   host is needed before movement validation is trusted (`TODO.md` → World).
 1. Check the stats page by eye (see Handoff), then its remaining parts: the skills / tech /
    spells tabs (top-right buttons and the right-hand panel), portrait, alignment gauge, hover
    help (charedit 100-140); then the original's window 15 between the editor and the game.
@@ -641,11 +685,10 @@ called it unused.)
    Dialogue must play voice through `audio::play_voice`. Menu keyboard hotkeys
    (`MainMenu.mes` 20-24, 60-64).
 5. Credits screen (multi-line text now exists).
-6. `.art` animation playback (frame rate, rotations, center/delta offsets) as a Bevy component.
-7. Replacement-art layer: a PNG next to an asset path (e.g. `mainmenuback.png`) overrides the
+6. Replacement-art layer: a PNG next to an asset path (e.g. `mainmenuback.png`) overrides the
    `.art`, so new art and upscales can drop in. Plus a coverage report of replaced assets.
-8. Steam install auto-detection (libraryfolders.vdf) as the default `ARCANUM_DIR`.
-9. Later: maps/tiles, critters, dialogue, scripts, saves.
+7. Steam install auto-detection (libraryfolders.vdf) as the default `ARCANUM_DIR`.
+8. Later: NPCs, dialogue, scripts, combat, Load Game listing the saves.
 
 ## Art pipeline (outside the repo)
 

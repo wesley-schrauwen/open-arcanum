@@ -288,10 +288,9 @@ Not done, or done differently from the plan:
 - **The tile mask blocks nothing around the start.** None of the 41 x 41 tiles round the start
   position is mask-blocked, so until object blocking is decoded the host lets a PC walk through
   the wreckage and scenery there (`TODO.md` → World).
-- **Walking speed is a placeholder** (3.5 tiles/s, from the implementation plan), and every
-  step takes the same time, diagonal or not. Both are to be matched to the original's walk
-  animation (step 6). The 10/14 costs and the no-corner-cutting rule are not checked against
-  the original either.
+- **Walking speed** was a placeholder (3.5 tiles/s); step 6 replaced it with the walk art's
+  timing (below). The 10/14 costs and the no-corner-cutting rule are not checked against the
+  original.
 - **No combat yet,** so nothing blocks but the map: `Occupied` is written and unused.
 - **Corrections, for the client (step 7) and remote play:** the client slides to a corrected
   tile rather than jumping, and ignores a correction whose `seq` is older than its last `Move`
@@ -365,6 +364,47 @@ Not done:
   stand in the house at 90330,84122). Only 8 per tile are kept apart; more tie. Order holds
   within about 256 tiles of the first sector's corner, which needs a re-origin once sectors
   stream far.
+
+## Animation: the PC stands and walks (step 6)
+
+- **Critter art ids** (`arcanum_formats::art_id::CritterArt`, from Arcanum.exe: builder
+  0x503c00, path sprintf 0x41dd33, normaliser 0x41d510). Gender, art body, armour, frame,
+  rotation, animation, palette and weapon fields; `art/critter/<body><g>/<body><g><armour>
+  <x|s><weapon><anim>.art`. Elf women use the human woman's body (no `eff` art exists), plate
+  armour is male with fixed bodies. Real data: all 390 distinct critter ids in the `.mob` NPCs
+  and PC prototypes, and their walk animations, name files that exist.
+- **The PC's art** (`arcanum_sim::pc_art`): the race's art body (table 0x5c5170), the gender,
+  underwear, standing, rotation 4, as the new-PC prototype (0x40d952) and creation (0x441c70)
+  build it; it matches all 13 PC prototypes. `Spawn` now carries the art id and the speed stat.
+- **Walking speed (owner's goal: match the original).** The original moves a walker by its walk
+  art's frame deltas, so speed depends on body and direction (a human's loop covers about
+  47 px diagonally, a dwarf's 30, a half-ogre's 61). Frames per second come from the speed stat
+  (0x437990: walk 6/17/30 at speed 0/8/30, +4 for dwarf, gnome and halfling bodies), frame time
+  `clamp(1000 / fps, 30, 800)` ms (0x42ee90). `arcanum_sim::Gait` reads the walk art's deltas
+  and times each step: its screen length over the pixels per frame in its direction. A human
+  at speed 8 takes 0.55 s for an edge step and 0.77 s across (was a flat 3.5 tiles/s). Host
+  and client use the same `Gait`.
+- **Client** (`actors.rs`, `animation.rs`): each `Spawn`ed PC is a sprite playing its stand
+  art, or its walk art at the gait's frame time, in the step's direction (rotations clockwise
+  from screen-up). It slides between tile centres; depth puts it after the objects on the lower
+  of its two tiles. Other players' PCs follow `Move`; `MoveCorrection` puts a PC on the host's
+  tile. The camera follows the PC's sprite.
+- **Local walking ahead of step 7:** `WalkLocalPc { goal }` plans with `find_path` on the
+  client's map, walks at once and sends the `Move`. `DEBUG_ARCANUM_WALK=x,y` sets it on entering
+  the world. Checked by eye on the start map: the PC stands, walks up-right with the camera,
+  and stops.
+
+Not done, or done differently from the original:
+
+- **Tile crossing is not traced.** The original adds frame deltas to the offset and re-bases
+  at some point (found only for the knockback mover, 0x42f390); here a step is one tile's screen
+  distance and the sprite slides linearly, so feet can slip slightly within a step.
+- **The speed curve between 0, 8 and 30 is inferred** (linear joins).
+- **The normaliser's animation fallbacks** (table built at 0x41ceed: a body without an
+  animation gets another) are not reproduced; stand and walk exist for every body.
+- **The 5-rotation mirror** (stored rotations 0, 4-7, the rest drawn flipped; flag 0x5bea14)
+  is not used: the data stores all 8 rotations.
+- **No running** (anim 6) and no NPCs.
 
 ## Builder's calls (proposed by Claude, not owner decisions)
 

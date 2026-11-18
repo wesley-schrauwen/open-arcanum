@@ -5,7 +5,8 @@
 //! menu, the pre-made picker or character creation), with the game's rules and start map, and
 //! dropped on going back to the main or Single Player menu. Each frame the bridge sends the
 //! [`CharacterHost`]'s queued intents, updates the host, and hands the deltas that came back to
-//! the [`CharacterHost`]; the local PC's `Spawn` is kept in [`LocalPc`] and its map in [`LocalMap`].
+//! the [`CharacterHost`]; the local PC's `Spawn` is kept in [`LocalPc`] and its map in [`LocalMap`],
+//! and the deltas about actors wait in [`ActorDeltas`] for the world.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +17,7 @@ use arcanum_formats::map::TileLoc;
 use arcanum_sim::{EntityKind, LedgerDelta, NetId, PlayerId, SaveFile, SaveStatus, SimRules, SimVfs, StartMap};
 use bevy::prelude::*;
 
+use crate::actors::ActorDeltas;
 use crate::character_host::CharacterHost;
 use crate::create_character::{CreationData, load_creation_data};
 use crate::main_menu::AppState;
@@ -108,6 +110,7 @@ pub fn start_host(world: &mut World) {
     world.insert_resource(CharacterHost::default());
     world.insert_resource(LocalPc::default());
     world.insert_resource(LocalMap::default());
+    world.insert_resource(ActorDeltas::default());
 }
 
 fn stop_host(world: &mut World) {
@@ -150,6 +153,7 @@ fn receive_deltas(
     mut character: ResMut<CharacterHost>,
     mut pc: ResMut<LocalPc>,
     mut map: ResMut<LocalMap>,
+    mut actors: Option<ResMut<ActorDeltas>>,
     data: Option<Res<CreationData>>,
 ) {
     let Some(link) = link else { return };
@@ -170,10 +174,15 @@ fn receive_deltas(
         if let LedgerDelta::EnterMap { map: name } = delta {
             map.0 = Some(name.clone());
         }
-        if let LedgerDelta::Spawn { net_id, kind: EntityKind::Pc { player }, position } = delta
+        if let LedgerDelta::Spawn { net_id, kind: EntityKind::Pc { player }, position, .. } = delta
             && *player == link.0.player()
         {
             pc.0 = Some((*net_id, *position));
+        }
+        if let Some(actors) = actors.as_mut()
+            && ActorDeltas::wants(delta)
+        {
+            actors.0.push(delta.clone());
         }
     }
 }

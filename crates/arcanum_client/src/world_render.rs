@@ -1,4 +1,5 @@
-//! Draws the world: the ground tiles of the sectors around the local PC.
+//! Draws the world: the ground tiles and map objects of the sectors around the local PC (critters
+//! are in [`actors`](crate::actors)).
 //!
 //! The map's unchanged content comes from the client's own copy of the game data: the host
 //! names the map ([`LocalMap`]) and places the PC ([`LocalPc`]), and the client reads the
@@ -326,10 +327,15 @@ fn show_tiles(
     }
 }
 
-/// Centres the camera on the local PC.
-fn follow_pc(pc: Res<LocalPc>, client: Res<ClientMap>, mut cameras: Query<&mut Transform, With<Camera2d>>) {
-    let (Some((_, at)), Some(origin)) = (pc.0, client.origin) else { return };
-    let target = tile_to_world(at, origin);
+/// Centres the camera on the local PC: its sprite once it has one, else its tile.
+fn follow_pc(
+    pc: Res<LocalPc>,
+    client: Res<ClientMap>,
+    actors: Query<(&crate::actors::Actor, &Transform), Without<Camera2d>>,
+    mut cameras: Query<&mut Transform, With<Camera2d>>,
+) {
+    let (Some((id, at)), Some(origin)) = (pc.0, client.origin) else { return };
+    let target = actors.iter().find(|(a, _)| a.net_id == id).map_or_else(|| tile_to_world(at, origin), |(_, t)| t.translation.truncate());
     for mut transform in &mut cameras {
         transform.translation.x = target.x;
         transform.translation.y = target.y;

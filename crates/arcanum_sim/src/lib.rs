@@ -11,6 +11,7 @@
 
 pub mod creation;
 pub mod delta;
+pub mod gait;
 pub mod intent;
 pub mod movement;
 pub mod net_id;
@@ -23,6 +24,7 @@ pub mod world;
 
 pub use creation::*;
 pub use delta::*;
+pub use gait::*;
 pub use intent::*;
 pub use movement::*;
 pub use net_id::*;
