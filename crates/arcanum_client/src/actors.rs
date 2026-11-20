@@ -26,7 +26,7 @@ use std::collections::{HashMap, VecDeque};
 use arcanum_formats::art_id::{ANIM_WALK, ArtId, ArtKind, CritterArt};
 use arcanum_formats::map::TileLoc;
 use arcanum_formats::object::{TYPE_PORTAL, TYPE_WALL};
-use arcanum_sim::{Gait, GameTime, LedgerDelta, MapObjectId, NetId, PcState, PlayerIntent, USE_RANGE, Walkable, find_path, rotation_of_step, sync_is_newer, walk_art};
+use arcanum_sim::{Gait, GameTime, LedgerDelta, MapObjectId, NetId, ActorState, PlayerIntent, USE_RANGE, Walkable, find_path, rotation_of_step, sync_is_newer, walk_art};
 use bevy::prelude::*;
 
 use crate::animation::ArtAnimation;
@@ -288,7 +288,7 @@ impl Actor {
     /// Follows a host sync for a PC this client does not control. Within a step of the host on
     /// the same route it walks on as it is; otherwise it takes the host's tile and path,
     /// sliding there. Returns true if it was moved.
-    pub fn follow(&mut self, host: &PcState) -> bool {
+    pub fn follow(&mut self, host: &ActorState) -> bool {
         if host.destination() == self.destination() {
             let next = self.steps.front().copied();
             let close = self.at == host.position || next == Some(host.position) || host.path.first() == Some(&self.at);
@@ -310,7 +310,7 @@ impl Actor {
     /// Checks a host sync for the local PC against where the client is taking it. Returns
     /// true, having moved to the host's tile and path, if the host's PC will stop somewhere
     /// else: the move was refused or a step was blocked.
-    pub fn sync_local(&mut self, host: &PcState) -> bool {
+    pub fn sync_local(&mut self, host: &ActorState) -> bool {
         if host.destination() == self.destination() {
             return false;
         }
@@ -439,12 +439,12 @@ fn apply_actor_deltas(
                 party.leader = Some(net_id);
                 party.pace = Some(pace);
             }
-            LedgerDelta::StateSync { number, time, pcs } | LedgerDelta::Resync { number, time, pcs } => {
+            LedgerDelta::StateSync { number, time, actors: states } | LedgerDelta::Resync { number, time, actors: states } => {
                 if !sync.take(number) {
                     continue;
                 }
                 clock.set(time);
-                for host in &pcs {
+                for host in &states {
                     let Some(Ok((_, mut a))) = by_id.get(&host.net_id).map(|&e| actors.get_mut(e)) else { continue };
                     if Some(host.net_id) != local {
                         a.follow(host);
@@ -788,8 +788,8 @@ mod tests {
         assert_eq!(s.last, Some(3));
     }
 
-    fn host(position: TileLoc, path: &[TileLoc], seq: u32) -> PcState {
-        PcState { net_id: NetId(0), position, path: path.to_vec(), seq }
+    fn host(position: TileLoc, path: &[TileLoc], seq: u32) -> ActorState {
+        ActorState { net_id: NetId(0), position, path: path.to_vec(), seq }
     }
 
     #[test]

@@ -506,7 +506,7 @@ impl ClientTransport for LanClient {
 #[cfg(test)]
 mod tests {
     use arcanum_formats::map::TileLoc;
-    use arcanum_sim::{CharacterRequest, NetId, PcState};
+    use arcanum_sim::{CharacterRequest, NetId, ActorState};
 
     use super::*;
 
@@ -522,7 +522,7 @@ mod tests {
     }
 
     fn sync(number: u32) -> LedgerDelta {
-        LedgerDelta::StateSync { number, time: Default::default(), pcs: vec![PcState { net_id: NetId(0), position: TileLoc { x: 1, y: 2 }, path: vec![], seq: 0 }] }
+        LedgerDelta::StateSync { number, time: Default::default(), actors: vec![ActorState { net_id: NetId(0), position: TileLoc { x: 1, y: 2 }, path: vec![], seq: 0 }] }
     }
 
     #[test]
@@ -559,7 +559,7 @@ mod tests {
         let big = LedgerDelta::StateSync {
             number: 8,
             time: Default::default(),
-            pcs: (0..50).map(|n| PcState { net_id: NetId(n), position: TileLoc { x: 100_000, y: 100_000 }, path: vec![TileLoc { x: 100_001, y: 100_001 }; 10], seq: 1 }).collect(),
+            actors: (0..50).map(|n| ActorState { net_id: NetId(n), position: TileLoc { x: 100_000, y: 100_000 }, path: vec![TileLoc { x: 100_001, y: 100_001 }; 10], seq: 1 }).collect(),
         };
         host.send_delta(p, big.clone()).unwrap();
         wait_for(|| client.recv_deltas().contains(&big).then_some(()));

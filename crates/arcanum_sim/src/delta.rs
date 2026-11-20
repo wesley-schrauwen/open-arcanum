@@ -45,7 +45,7 @@ pub fn sync_distance(from: u32, to: u32) -> u32 {
 
 /// One PC in a [`LedgerDelta::StateSync`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PcState {
+pub struct ActorState {
     pub net_id: NetId,
     /// The tile it is on.
     pub position: TileLoc,
@@ -56,7 +56,7 @@ pub struct PcState {
     pub seq: u32,
 }
 
-impl PcState {
+impl ActorState {
     /// Where the PC will stop: the end of its path, or its tile.
     pub fn destination(&self) -> TileLoc {
         self.path.last().copied().unwrap_or(self.position)
@@ -81,10 +81,10 @@ pub enum LedgerDelta {
     /// ([`crate::sync_state`]); `number` counts syncs, rolling over at [`SYNC_NUMBERS`], and a
     /// client keeps the newest ([`sync_is_newer`]) and drops older ones. It also answers moves:
     /// a PC's `seq` is the last move of its player the host took. `time` is the game clock.
-    StateSync { number: u32, time: crate::GameTime, pcs: Vec<PcState> },
+    StateSync { number: u32, time: crate::GameTime, actors: Vec<ActorState> },
     /// The same as a `StateSync`, but sent reliably, to a client that reported it is far
     /// behind ([`PlayerIntent::SyncAck`](crate::PlayerIntent::SyncAck)).
-    Resync { number: u32, time: crate::GameTime, pcs: Vec<PcState> },
+    Resync { number: u32, time: crate::GameTime, actors: Vec<ActorState> },
     /// Every change to the map's objects so far (doors opened or closed), sent to a player
     /// after `EnterMap`: the client applies them to its own copy of the map.
     MapChanges { changes: BTreeMap<SectorId, SectorDelta> },
@@ -118,8 +118,8 @@ mod tests {
         assert!(sync_is_newer(2, 9_998), "after the roll-over");
         assert!(!sync_is_newer(9_998, 2));
         assert_eq!(sync_distance(9_998, 2), 4);
-        assert!(!LedgerDelta::StateSync { number: 1, time: Default::default(), pcs: vec![] }.reliable());
-        assert!(LedgerDelta::Resync { number: 1, time: Default::default(), pcs: vec![] }.reliable());
+        assert!(!LedgerDelta::StateSync { number: 1, time: Default::default(), actors: vec![] }.reliable());
+        assert!(LedgerDelta::Resync { number: 1, time: Default::default(), actors: vec![] }.reliable());
     }
 
     #[test]
@@ -127,8 +127,8 @@ mod tests {
         let deltas = [
             LedgerDelta::CharacterUpdate { player: PlayerId(7), ack: 3, creation: Creation::default() },
             LedgerDelta::Spawn { net_id: NetId(1), kind: EntityKind::Pc { player: PlayerId(7) }, position: TileLoc { x: 3, y: 4 }, art: 0x2800_2000, speed: 8 },
-            LedgerDelta::StateSync { number: 9, time: crate::GameTime::at_hour(15), pcs: vec![PcState { net_id: NetId(1), position: TileLoc { x: 3, y: 4 }, path: vec![TileLoc { x: 3, y: 5 }, TileLoc { x: 4, y: 6 }], seq: 2 }] },
-            LedgerDelta::Resync { number: 9_999, time: crate::GameTime { days: 3, ms: 7 }, pcs: vec![] },
+            LedgerDelta::StateSync { number: 9, time: crate::GameTime::at_hour(15), actors: vec![ActorState { net_id: NetId(1), position: TileLoc { x: 3, y: 4 }, path: vec![TileLoc { x: 3, y: 5 }, TileLoc { x: 4, y: 6 }], seq: 2 }] },
+            LedgerDelta::Resync { number: 9_999, time: crate::GameTime { days: 3, ms: 7 }, actors: vec![] },
             LedgerDelta::Tick(12),
         ];
         for delta in deltas {

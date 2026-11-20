@@ -827,6 +827,32 @@ Not done: the AI itself, combat, perception, fidgets.
 
 Not done: combat, where each would move at its own speed; companions; changing the leader.
 
+## NPCs keep to their standpoints and wander (after the party pace)
+
+The original's idle AI (heartbeat 0x4ad200, standpoint and wander logic 0x4acdb0, `ag_wander`
+0x425930), decided by the host (`arcanum_sim::wander`):
+
+- **Heartbeat:** each active NPC (within 30 tiles of a PC) thinks after `ai_delay_ms` of the
+  nearest PC's distance (250 ms next to one, 5 s at 30 or more).
+- **Anchor:** its day standpoint (`npc_standpoint_day`) from 6:00 to 20:59, else its night one;
+  where it stands when it has none. At exactly hours 6 and 21 it thinks only one time in a
+  thousand, as in the original.
+- **Range:** 4 tiles (`WANDER_RANGE`) if it wanders (`npc_flags` 0x1000, or 0x2000 for
+  wandering in the dark), else 1. Further away it walks back to within 1 tile of its anchor.
+- **Wandering:** a wanderer in range picks a random tile within 4 of its anchor and walks
+  there if a path of 1 to 4 steps exists, else tries again 300 ms later. The area is a circle
+  (owner's radius rule; the original's is a 9 x 9 square).
+- **Out of range of PCs:** an inactive NPC away from its anchor is put back on it at once
+  (0x43e770), as nobody sees it.
+- **Syncs** now carry actors, not only PCs (`ActorState`): every PC, NPCs while they walk and
+  once when they stop (`JustStopped`), and every NPC in a keyframe. The host's `walk` steps
+  NPCs too (PCs at the party's pace, NPCs at their own). Clients already follow other actors'
+  paths.
+- **Real data:** 15 of the 34 NPCs round the start wander.
+
+Not done: waypoint patrols (0x4acbb0), seeking darkness (no light model), fidgets, spreading
+out of a shared tile, NPC speed stats (all walk at speed 8), the standpoint marker object.
+
 ## Builder's calls (proposed by Claude, not owner decisions)
 
 - `arcanum_sim` uses `bevy_ecs` (and `bevy_app` for scheduling) with no rendering, audio or

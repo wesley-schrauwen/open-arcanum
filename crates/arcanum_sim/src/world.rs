@@ -85,6 +85,7 @@ pub fn spawn_npcs(
     mut ids: ResMut<NetIds>,
     session: Res<Session>,
     mut outbox: ResMut<Outbox>,
+    vfs: Option<Res<SimVfs>>,
 ) {
     let mut new: Vec<SectorId> = map.sectors.keys().filter(|id| !populated.0.contains(id)).copied().collect();
     if new.is_empty() {
@@ -98,7 +99,10 @@ pub fn spawn_npcs(
             let (Some(position), Some(art), Some(prototype)) = (crate::object_location(object), map.prototypes.art_id(object), object.prototype.prototype()) else { continue };
             let net_id = ids.0.allocate();
             let look = Appearance { art, speed: NPC_SPEED };
-            commands.spawn((net_id, Npc { prototype }, Position(position), look));
+            let vfs_guard = vfs.as_ref().and_then(|v| v.0.read().ok());
+            let gait = Gait::load(art, NPC_SPEED, |p| vfs_guard.as_deref().and_then(|v| v.read(p).ok()));
+            let standpoints = crate::Standpoints::of(object, &map.prototypes, position);
+            commands.spawn((net_id, Npc { prototype }, Position(position), look, gait, standpoints));
             let spawn = look.spawn(net_id, EntityKind::Npc { prototype }, position);
             outbox.0.extend(players.iter().map(|&p| (p, spawn.clone())));
         }
@@ -579,7 +583,7 @@ mod tests {
             assert!(first < spawn && first.is_some(), "player {to} learns the map first: {deltas:?}");
         }
         // Then a sync says where everyone is.
-        assert!(matches!(&deltas.last().unwrap().1, LedgerDelta::StateSync { pcs, .. } if pcs.len() == 2), "{deltas:?}");
+        assert!(matches!(&deltas.last().unwrap().1, LedgerDelta::StateSync { actors, .. } if actors.len() == 2), "{deltas:?}");
         // No PC is spawned twice on later ticks.
         sim.update();
         assert!(!sim.take_deltas().iter().any(|(_, d)| matches!(d, LedgerDelta::Spawn { .. })));
@@ -630,15 +634,15 @@ mod tests {
     }
 
     /// PC 0's state in the last sync `player` got, if any.
-    fn synced(deltas: &[(PlayerId, LedgerDelta)], player: u64) -> Option<crate::PcState> {
+    fn synced(deltas: &[(PlayerId, LedgerDelta)], player: u64) -> Option<crate::ActorState> {
         deltas.iter().rev().find_map(|(p, d)| match d {
-            LedgerDelta::StateSync { pcs, .. } if p.0 == player => pcs.iter().find(|s| s.net_id == NetId(0)).cloned(),
+            LedgerDelta::StateSync { actors, .. } if p.0 == player => actors.iter().find(|s| s.net_id == NetId(0)).cloned(),
             _ => None,
         })
     }
 
-    fn state(position: TileLoc, path: &[(u32, u32)], seq: u32) -> crate::PcState {
-        crate::PcState { net_id: NetId(0), position, path: path.iter().map(|&(x, y)| t(x, y)).collect(), seq }
+    fn state(position: TileLoc, path: &[(u32, u32)], seq: u32) -> crate::ActorState {
+        crate::ActorState { net_id: NetId(0), position, path: path.iter().map(|&(x, y)| t(x, y)).collect(), seq }
     }
 
     #[test]
@@ -1028,5 +1032,35 @@ mod tests {
             }
         }
         assert!(arrived[0].is_some() && arrived[0] == arrived[1], "together: {arrived:?}");
+    }
+
+    #[test]
+    fn a_wandering_npc_walks_round_its_standpoint_and_players_see_it() {
+        let dir = tempfile::tempdir().unwrap();
+        write_map(dir.path());
+        let mut sim = booted(dir.path(), save(&[(7, "A", t(70, 80))]));
+        sim.take_deltas();
+        // As if its npc_flags had ONF_WANDERS.
+        let world = sim.app.world_mut();
+        world.query_filtered::<&mut crate::Standpoints, bevy_ecs::query::With<Npc>>().single_mut(world).unwrap().wanders = true;
+        let npc_at = |sim: &mut SimApp| {
+            let world = sim.app.world_mut();
+            world.query_filtered::<&Position, bevy_ecs::query::With<Npc>>().single(world).unwrap().0
+        };
+        let mut seen_walking = false;
+        let mut places = BTreeSet::new();
+        for _ in 0..30 * 30 {
+            sim.update();
+            let at = npc_at(&mut sim);
+            places.insert((at.x, at.y));
+            assert!(crate::within_radius(at, t(80, 80), crate::WANDER_RANGE), "{at:?}");
+            for (_, d) in sim.take_deltas() {
+                if let LedgerDelta::StateSync { actors, .. } | LedgerDelta::Resync { actors, .. } = d {
+                    seen_walking |= actors.iter().any(|a| a.net_id == NetId(1) && !a.path.is_empty());
+                }
+            }
+        }
+        assert!(places.len() > 2, "it moved about: {places:?}");
+        assert!(seen_walking, "players were told");
     }
 }

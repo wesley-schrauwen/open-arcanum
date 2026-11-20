@@ -33,7 +33,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use arcanum_formats::map::TileLoc;
 use bevy_ecs::prelude::*;
 
-use crate::{Gait, LedgerDelta, LoadedMap, NetId, Outbox, PcState, PlayerControlled, PlayerId, Position, Session, SessionPlayer, TICK_HZ, Walkable, WorldState, adjacent, step_allowed, walk_fps};
+use crate::{Gait, LedgerDelta, LoadedMap, NetId, Outbox, ActorState, PlayerControlled, PlayerId, Position, Session, SessionPlayer, TICK_HZ, Walkable, WorldState, adjacent, step_allowed, walk_fps};
 
 /// Ticks between state syncs while any PC walks (10 a second).
 pub const SYNC_TICKS_MOVING: u32 = 3;
@@ -158,7 +158,9 @@ pub struct Walking {
 pub struct MoveRequests(pub Vec<(PlayerId, u32, Vec<TileLoc>)>);
 
 type MoverQuery<'a> = (Entity, &'a NetId, &'a Position, &'a PlayerControlled, Option<&'a Walking>, Option<&'a mut LastMove>, Option<&'a crate::PendingUse>);
-type SyncedQuery<'a> = (&'a NetId, &'a Position, Option<&'a Walking>, Option<&'a LastMove>);
+/// PCs and NPCs.
+type Actor = Or<(With<PlayerControlled>, With<crate::Npc>)>;
+type SyncedQuery<'a> = (Entity, &'a NetId, &'a Position, Option<&'a Walking>, Option<&'a LastMove>, Has<PlayerControlled>, Has<JustStopped>);
 
 /// Checks each move request against the player's PC. Accepted: the PC walks the path.
 /// Refused: the PC stops where it is. Either way the move is the PC's [`LastMove`] and a sync
@@ -215,17 +217,25 @@ pub fn apply_moves(
     }
 }
 
-type WalkerQuery<'a> = (Entity, &'a mut Position, &'a PlayerControlled, Option<&'a Gait>, Option<&'a mut Walking>);
+type WalkerQuery<'a> = (Entity, &'a mut Position, Option<&'a PlayerControlled>, Option<&'a Gait>, Option<&'a mut Walking>);
 
-/// Steps walking PCs along their paths, checking each step against the map just before it is
-/// taken (see the module docs). A PC that reaches the end or cannot go on stops, its position
-/// goes into the save, and a sync is due.
+/// An NPC that stopped walking since the last state sync: the next sync includes it once.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JustStopped;
+
+/// Steps walking actors (PCs and NPCs) along their paths, checking each step against the map
+/// just before it is taken (see the module docs). One that reaches the end or cannot go on
+/// stops and a sync is due; a PC's position goes into the save. PCs out of combat move at the
+/// party's pace.
 pub fn walk(mut commands: Commands, map: Res<LoadedMap>, pace: Res<crate::PartyPace>, mut clock: ResMut<SyncClock>, mut world: ResMut<WorldState>, mut pcs: Query<WalkerQuery>) {
     for (entity, mut position, player, gait, walking) in &mut pcs {
         let Some(mut walking) = walking else { continue };
         let own = gait.copied().unwrap_or(Gait::human(walk_fps(8, 0)));
         // Out of combat the party moves at its leader's pace (there is no combat yet).
-        let gait = pace.gait.map_or(own, |p| own.paced(&p));
+        let gait = match (player, pace.gait) {
+            (Some(_), Some(p)) => own.paced(&p),
+            _ => own,
+        };
         walking.progress += 1.0 / TICK_HZ;
         let mut stopped = false;
         while let Some(&next) = walking.steps.front() {
@@ -244,7 +254,12 @@ pub fn walk(mut commands: Commands, map: Res<LoadedMap>, pace: Res<crate::PartyP
         }
         if stopped || walking.steps.is_empty() {
             commands.entity(entity).remove::<Walking>();
-            record_position(&mut world, player.0, position.0);
+            match player {
+                Some(player) => record_position(&mut world, player.0, position.0),
+                None => {
+                    commands.entity(entity).insert(JustStopped);
+                }
+            }
             clock.due = true;
         }
     }
@@ -260,12 +275,13 @@ pub fn sync_state(
     mut clock: ResMut<SyncClock>,
     session: Res<Session>,
     mut outbox: ResMut<Outbox>,
-    pcs: Query<SyncedQuery, With<PlayerControlled>>,
+    mut commands: Commands,
+    pcs: Query<SyncedQuery, Actor>,
     clock_time: Res<crate::GameClock>,
 ) {
     clock.since += 1;
     clock.since_keyframe += 1;
-    let moving = pcs.iter().any(|pc| pc.2.is_some());
+    let moving = pcs.iter().any(|pc| pc.3.is_some());
     let period = if moving { SYNC_TICKS_MOVING } else { SYNC_TICKS_IDLE };
     let keyframe = clock.since_keyframe >= KEYFRAME_TICKS;
     if !clock.due && !keyframe && clock.since < period {
@@ -276,13 +292,16 @@ pub fn sync_state(
     if keyframe {
         clock.since_keyframe = 0;
     }
-    let mut states: Vec<PcState> = pcs
+    // Every PC; NPCs while they walk and once more when they stop, and all of them in a
+    // keyframe, so a client that missed a stop catches up.
+    let mut states: Vec<ActorState> = pcs
         .iter()
-        .map(|(&net_id, &Position(position), walking, last)| PcState {
-            net_id,
-            position,
-            path: walking.map(|w| w.steps.iter().copied().collect()).unwrap_or_default(),
-            seq: last.map_or(0, |l| l.0),
+        .filter(|(_, _, _, walking, _, pc, stopped)| *pc || keyframe || walking.is_some() || *stopped)
+        .map(|(entity, &net_id, &Position(position), walking, last, _, stopped)| {
+            if stopped {
+                commands.entity(entity).remove::<JustStopped>();
+            }
+            ActorState { net_id, position, path: walking.map(|w| w.steps.iter().copied().collect()).unwrap_or_default(), seq: last.map_or(0, |l| l.0) }
         })
         .collect();
     if states.is_empty() {
@@ -297,9 +316,9 @@ pub fn sync_state(
         clock.players.entry(player).or_insert((number, None));
         let sync = if keyframe || clock.needs_resync(player) {
             clock.players.get_mut(&player).expect("inserted above").1 = Some(number);
-            LedgerDelta::Resync { number, time: clock_time.now, pcs: states.clone() }
+            LedgerDelta::Resync { number, time: clock_time.now, actors: states.clone() }
         } else {
-            LedgerDelta::StateSync { number, time: clock_time.now, pcs: states.clone() }
+            LedgerDelta::StateSync { number, time: clock_time.now, actors: states.clone() }
         };
         outbox.0.push((player, sync));
     }

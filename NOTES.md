@@ -12,7 +12,7 @@ Last updated: 2026-11-20 (world milestone steps 1-8 done: Milestones A and A2; t
   (`feat/click-to-move`) → #35 (`feat/udp-join`) → #36
   (`feat/object-blocking`) → #37 (`feat/npcs`) → #38
   (`feat/ground-objects`) → #39 (`feat/sector-streaming`) → #40 (`feat/doors`) → #41 (`feat/tile-blocking`) → #42 (`feat/game-clock`) →
-  #43 (`feat/depth-rebase`) → #44 (`feat/original-radii`) → party pace (`feat/party-pace`, the newest). Merging #26 into
+  #43 (`feat/depth-rebase`) → #44 (`feat/original-radii`) → #45 (`feat/party-pace`) → NPC wander (`feat/npc-wander`, the newest). Merging #26 into
   `main` brings in #10-#25 as well. Then **retarget each next PR to `main` before merging it**.
 - **World milestone:** `plans/world_milestone.md` is the plan and records each step as built
   (differences from the plan, what is not done). Steps 1-8 are done: map readers (#19), the
@@ -26,7 +26,8 @@ Last updated: 2026-11-20 (world milestone steps 1-8 done: Milestones A and A2; t
   containers and items on the ground (#38), sector streaming (#39), doors (#40), ground tiles that block (#41),
   the game clock (#42), draw order that
   follows the PC (#43), the original's distances as a radius (#44),
-  and the party pace (`feat/party-pace`). The milestone plan is complete; what is left is
+  the party pace (#45),
+  and NPCs wandering (`feat/npc-wander`). The milestone plan is complete; what is left is
   listed under each step's "Not done" and in `TODO.md` → World.
 - **World debug start:** `DEBUG_ARCANUM_SCREEN=ingame` (character "Debug"), optionally
   `DEBUG_ARCANUM_START=x,y` (e.g. `90330,84122`, a Shrouded Hills house) and
@@ -92,7 +93,7 @@ a text field).
 | Fonts | Game bitmap fonts decoded and rendered (`BitmapText`, multi-line: wrap, `\n`, tab indents, whole-line clipping). Menu uses `Morph30Font`/`morph15font`; character screens add `Flare12Font` (`UiFont::Body`) with the original white/red tints. Override TTF still wins if present; built-in font as last resort. |
 | Game data formats | `.mes`, `.art`, fonts, `.dat`; objects (`arcanum_formats::object`: prototypes and instances, PC field tables from the engine's names); maps/sectors (#19). |
 | Resolutions | Done. 720p–8K, 4:3–2.4:1, `UiScale` from a 1080 baseline. |
-| Tests | 424 `#[test]` functions; real-data tests skip without game data (synthetic archives/art/fonts, headless Bevy). |
+| Tests | 428 `#[test]` functions; real-data tests skip without game data (synthetic archives/art/fonts, headless Bevy). |
 | Everything else | Not started: game screens, critter art, NPCs, dialogue, scripts, combat, UDP. |
 
 ### Git state
@@ -378,6 +379,12 @@ Recovered by inspecting data and by reverse engineering `Arcanum.exe` with the R
 - **NPCs**: `.mob` files (`G_<guid>.mob`) hold the map's NPCs, containers and items; carried
   ones have `OF_INVENTORY` (0x1000). The host spawns NPCs per loaded sector
   (`arcanum_sim::spawn_npcs`).
+- **Idle AI** (`arcanum_sim::wander`): heartbeat case 0x4ac583 tries patrol 0x4acbb0, standpoint
+  and wander 0x4acdb0, fidget 0x435ce0, spread-out 0x4364d0. `npc_flags` (field 0x118): 0x1000
+  wanders, 0x2000 wanders in the dark, 0x200 at standpoint (runtime), 0x2/0x4 day/night
+  waypoints. Standpoints 0x121 (day, hours 6-20) and 0x122 (night). Range 4 for wanderers, else
+  1. `ag_wander` is goal 0x41 (node 0x5ad7d0); `ag_move_near_tile` 7. Goal type = name index + 3
+  with the names at 0x5a164c.
 - **Distances** (`arcanum_sim::activity`): the original's tile distance is max(|dx|, |dy|)
   (0x4b96f0); ours is a radius, sqrt(dx^2 + dy^2) (owner's call), with the original's numbers. NPC AI
   runs within 30 tiles of a PC (0x4ad420), heartbeat delay `250 + 4750 * min(d, 30) / 30` ms.
@@ -739,7 +746,7 @@ called it unused.)
 ## Suggested next steps
 
 0. World: what each world step left (`plans/world_milestone.md`, `TODO.md` → World): NPCs
-   moving, taking and dropping items (sector changes, as doors do), keys and lockpicking, lighting by hour, waiting and resting, wall cutaway and roofs, reconnecting to a LAN game, the host/join menus.
+   fighting, taking and dropping items (sector changes, as doors do), keys and lockpicking, lighting by hour, waiting and resting, wall cutaway and roofs, reconnecting to a LAN game, the host/join menus.
 1. Check the stats page by eye (see Handoff), then its remaining parts: the skills / tech /
    spells tabs (top-right buttons and the right-hand panel), portrait, alignment gauge, hover
    help (charedit 100-140); then the original's window 15 between the editor and the game.
