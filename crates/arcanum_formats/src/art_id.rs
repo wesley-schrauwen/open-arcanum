@@ -21,7 +21,9 @@
 //! | 2 | critter | 0x41dc58 branch ([`CritterArt`]) |
 //! | 3 | portal | 0x4ec620 |
 //! | 4 | scenery | 0x41db89 branch |
-//! | 5, 6, 7 | interface, item, container | not decoded |
+//! | 5 | interface | not decoded |
+//! | 6 | item | 0x4ec290: `art/item/<name>` from `item_ground.mes` (and the other looks) |
+//! | 7 | container | 0x41dbf0: `art/container/<name>` from `container.mes` |
 //! | 9 | light | 0x4ed250 |
 //! | 0xA | roof | 0x4ed370 |
 //! | 0xB | facade (sector tiles that are not terrain) | 0x4ec3f0 |
@@ -126,7 +128,16 @@ pub const ART_INDEX_FILES: &[&str] = &[
     "art/light/light.mes",
     "art/monster/monster.mes",
     "art/unique_npc/unique_npc.mes",
+    "art/item/item_ground.mes",
+    "art/item/item_inven.mes",
+    "art/item/item_paper.mes",
+    "art/item/item_schematic.mes",
+    "art/container/container.mes",
 ];
+
+/// The item index files by look (bits 12-13 of an item art id): ground, inventory, paperdoll,
+/// schematic.
+const ITEM_INDEX_FILES: [&str; 4] = ["art/item/item_ground.mes", "art/item/item_inven.mes", "art/item/item_paper.mes", "art/item/item_schematic.mes"];
 
 /// Wall piece names, indexed by bits 14..19 (table at 0x5bb6b0).
 pub const WALL_PIECES: [&str; 46] = [
@@ -391,6 +402,10 @@ pub struct ArtIndex {
     monsters: HashMap<u32, String>,
     /// Unique NPC names (`art/unique_npc/unique_npc.mes`), by number.
     unique_npcs: HashMap<u32, String>,
+    /// Item file names by look ([`ITEM_INDEX_FILES`]), then key.
+    items: [HashMap<u32, String>; 4],
+    /// Container file names (`art/container/container.mes`), by key.
+    containers: HashMap<u32, String>,
 }
 
 /// The file name tail shared by monster and unique NPC art (path builders 0x41dd45, 0x41dbfc):
@@ -462,6 +477,14 @@ impl ArtIndex {
         for (key, text) in sorted(&mes("art/unique_npc/unique_npc.mes")?) {
             index.unique_npcs.insert(key, text.trim().to_ascii_lowercase());
         }
+        for (look, file) in ITEM_INDEX_FILES.into_iter().enumerate() {
+            for (key, text) in sorted(&mes(file)?) {
+                index.items[look].insert(key, text.trim().to_string());
+            }
+        }
+        for (key, text) in sorted(&mes("art/container/container.mes")?) {
+            index.containers.insert(key, text.trim().to_string());
+        }
         Ok(index)
     }
 
@@ -499,6 +522,23 @@ impl ArtIndex {
                 let name = self.monsters.get(&((id.0 >> 23) & 0x1f))?;
                 let armour = if (id.0 >> 6) & 0x1f == 24 { "xx" } else { CRITTER_ARMOUR.get(((id.0 >> 20) & 7) as usize).copied().unwrap_or("??") };
                 Some(format!("art/monster/{name}/{name}{armour}{}.art", creature_tail(id)))
+            }
+            // Item (builder 0x4ec290): number bits 17-27, sub-type 6-9, item type 0-3, look
+            // 12-13; key number + 20 * sub-type + 1000 * type, plus 100 * f + 200 (bits 14-16)
+            // for type 2 when f is set.
+            ArtKind::Item => {
+                let (number, sub, ty, f) = ((id.0 >> 17) & 0x7ff, (id.0 >> 6) & 0xf, id.0 & 0xf, (id.0 >> 14) & 7);
+                let mut key = number + 20 * sub + 1000 * ty;
+                if ty == 2 && f != 0 {
+                    key += 100 * f + 200;
+                }
+                let look = ((id.0 >> 12) & 3) as usize;
+                self.items[look].get(&key).map(|name| format!("art/item/{name}"))
+            }
+            // Container: number bits 19-27, category 6-10; key category * 1000 + number.
+            ArtKind::Container => {
+                let key = ((id.0 >> 6) & 0x1f) * 1000 + id.number();
+                self.containers.get(&key).map(|name| format!("art/container/{name}"))
             }
             // Number bits 20-27, no armour.
             ArtKind::UniqueNpc => {
@@ -614,6 +654,9 @@ mod tests {
     const LIGHT: &str = "{80}{lgt}\n";
     const MONSTER: &str = "{0}{wlf}\n{9}{bun}\n";
     const UNIQUE_NPC: &str = "{5} {ghmst}\n{17} {hmfc2}\n";
+    const ITEM_GROUND: &str = "// ground\n{2702}{g_jewelry_small00.ART}\n{2100}{g_robe00.ART}\n{262}{g_staff.ART}\n{9080}{g_passport_ground_object.ART}\n";
+    const ITEM_INVEN: &str = "{262}{i_staff.ART}\n";
+    const CONTAINER: &str = "{1048}{crate_wooden_Flip.art}\n";
 
     fn index() -> ArtIndex {
         let facade = facade_mes();
@@ -627,6 +670,11 @@ mod tests {
             ("art/light/light.mes", LIGHT),
             ("art/monster/monster.mes", MONSTER),
             ("art/unique_npc/unique_npc.mes", UNIQUE_NPC),
+            ("art/item/item_ground.mes", ITEM_GROUND),
+            ("art/item/item_inven.mes", ITEM_INVEN),
+            ("art/item/item_paper.mes", ""),
+            ("art/item/item_schematic.mes", ""),
+            ("art/container/container.mes", CONTAINER),
         ]);
         ArtIndex::load(|p| files.get(p).map(|s| s.as_bytes().to_vec())).unwrap()
     }
@@ -743,9 +791,22 @@ mod tests {
     fn no_art_and_undecoded_kinds_are_none() {
         let i = index();
         assert_eq!(p(&i, ArtId::NONE), None);
-        for t in [5u32, 6, 7, 8, 0xE, 0xF] {
+        for t in [5u32, 8, 0xE, 0xF] {
             assert_eq!(p(&i, ArtId(t << 28 | 0x1234)), None, "type {t}");
         }
+    }
+
+    #[test]
+    fn item_and_container_id_to_path() {
+        let i = index();
+        // From the start map's .mob files.
+        assert_eq!(p(&i, ArtId(0x6005_4002)).as_deref(), Some("art/item/g_jewelry_small00.ART"), "type 2 with f = 5");
+        assert_eq!(p(&i, ArtId(0x6000_0162)).as_deref(), Some("art/item/g_robe00.ART"), "bits 4-5 do not count");
+        assert_eq!(p(&i, ArtId(0x6004_0340)).as_deref(), Some("art/item/g_staff.ART"));
+        assert_eq!(p(&i, ArtId(0x60a0_0009)).as_deref(), Some("art/item/g_passport_ground_object.ART"));
+        assert_eq!(p(&i, ArtId(0x6004_0340 | 1 << 12)).as_deref(), Some("art/item/i_staff.ART"), "inventory look");
+        assert_eq!(p(&i, ArtId(0x7180_0040)).as_deref(), Some("art/container/crate_wooden_Flip.art"));
+        assert_eq!(p(&i, ArtId(0x7180_0040 | 3 << 11 | 1 << 14)).as_deref(), Some("art/container/crate_wooden_Flip.art"), "rotation and frame do not count");
     }
 
     #[test]

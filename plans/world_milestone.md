@@ -604,13 +604,41 @@ and NPCs that cannot open doors (`TODO.md` → World).
 Not done:
 
 - **NPCs do not move,** and their speed and stats are not read.
-- **Containers and items on the ground are not drawn.** The art paths of types 6 (item) and 7
-  (container) are not decoded; the agent looking them up stopped on a usage limit.
+- **Containers and items on the ground are not drawn.** (Done next: "Containers and items on
+  the ground" below.)
 - **The original's animation fallback** for monsters and unique NPCs (remap tables at
   0x5a106c-0x5a1150, masks from directory scans) is not reproduced; only the missing-stand case
   is handled.
 - **Rotation for monsters and unique NPCs** is assumed to follow critters (not verified).
 - **Changing maps** would keep the old `PopulatedSectors` (one map so far).
+
+## Containers and items on the ground (after NPCs)
+
+- **Item and container art** (`ArtIndex::path`, from the exe):
+  - Item (type 6, builder 0x4ec290): number bits 17-27, sub-type 6-9, item type 0-3, look 12-13
+    (0 ground, 1 inventory, 2 paperdoll, 3 schematic; `art/item/item_ground.mes`,
+    `item_inven.mes`, `item_paper.mes`, `item_schematic.mes`). The key is
+    `number + 20 * sub-type + 1000 * type`, plus `100 * f + 200` for type 2 with f (bits
+    14-16) set. Path `art/item/<name>`. Objects on the map store look 0, ground.
+  - Container (type 7, 0x41dbf0): number bits 19-27, category 6-10, key
+    `category * 1000 + number` in `art/container/container.mes`. Path `art/container/<name>`.
+    Rotation and frame (bits 11-13, 14-18) are drawing only.
+  - Every container and item in every map's `.mob` files resolves to art that exists
+    (real-data test: 610 containers, 8016 items, 305 containers drawn with scenery art).
+- **The client draws them** from its own copy of the map, after each sector's own objects: the
+  `.mob` containers and items not carried (`LoadedMap::mobiles`). Items show frame 0 and
+  rotation 0; containers the frame their art id names.
+- **Checked by eye at the start:** a bottle lies on the ground left of the PC, and nothing else
+  changed.
+
+Not done:
+
+- **Taking and dropping** are shared state and need host deltas (sector changes); the client
+  draws the map's unchanged copy.
+- **The order on a tile** between a sector's objects and the `.mob` objects is not traced; the
+  `.mob` ones draw after.
+- **Container frames:** 2-frame container art (frame 0 larger) is assumed to be closed and
+  open; not traced.
 
 ## Builder's calls (proposed by Claude, not owner decisions)
 

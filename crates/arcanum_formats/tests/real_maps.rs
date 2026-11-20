@@ -511,3 +511,36 @@ fn npc_art_resolves() {
     eprintln!("NPC art kinds: {kinds:?}; missing: {missing:?}");
     assert!(missing.is_empty(), "{missing:?}");
 }
+
+/// Every container and item in every map's `.mob` files (art its own or its prototype's) has
+/// art that exists.
+#[test]
+fn container_and_item_art_resolves() {
+    use arcanum_formats::object::{Prototypes, TYPE_CONTAINER, TYPE_GENERIC, TYPE_WEAPON};
+    let (Some(archive), Some(vfs)) = (module_archive(), vfs()) else { return };
+    let index = art_index(&vfs);
+    let mut protos = Prototypes::default();
+    for e in std::fs::read_dir(game_dir().join("data/proto")).into_iter().flatten().flatten() {
+        protos.insert(Object::parse_prototype(&std::fs::read(e.path()).unwrap()).unwrap());
+    }
+    let (mut found, mut missing) = (BTreeMap::<String, usize>::new(), BTreeMap::<String, usize>::new());
+    let mut exists: HashMap<String, bool> = HashMap::new();
+    for path in map_files(&archive, ".mob") {
+        let obj = Object::parse_instance(&archive.read(&path).unwrap()).unwrap();
+        if obj.object_type != TYPE_CONTAINER && !(TYPE_WEAPON..=TYPE_GENERIC).contains(&obj.object_type) {
+            continue;
+        }
+        let Some(art) = protos.art_id(&obj) else {
+            *missing.entry("no art id".into()).or_default() += 1;
+            continue;
+        };
+        let kind = format!("{:?}", art.kind());
+        match index.path(art) {
+            Some(p) if *exists.entry(p.clone()).or_insert_with(|| vfs.exists(&p)) => *found.entry(kind).or_default() += 1,
+            Some(p) => *missing.entry(p).or_default() += 1,
+            None => *missing.entry(format!("{kind} {:#x}: no path", art.0)).or_default() += 1,
+        }
+    }
+    eprintln!("found by art kind: {found:?}; missing: {missing:?}");
+    assert!(missing.is_empty(), "{} missing: {missing:?}", missing.values().sum::<usize>());
+}

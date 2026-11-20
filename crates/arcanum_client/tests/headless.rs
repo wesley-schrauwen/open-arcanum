@@ -2322,6 +2322,11 @@ fn world_art_index_files() -> Vec<(&'static str, String)> {
         ("art/light/light.mes", String::new()),
         ("art/monster/monster.mes", String::new()),
         ("art/unique_npc/unique_npc.mes", String::new()),
+        ("art/item/item_ground.mes", String::new()),
+        ("art/item/item_inven.mes", String::new()),
+        ("art/item/item_paper.mes", String::new()),
+        ("art/item/item_schematic.mes", String::new()),
+        ("art/container/container.mes", String::new()),
     ]
 }
 

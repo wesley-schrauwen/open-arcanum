@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 
 use arcanum_formats::art_id::{ArtId, ArtIndex};
 use arcanum_formats::map::{SECTOR_TILES as SECTOR_SIZE, SectorId, TileLoc};
-use arcanum_formats::object::{TYPE_PORTAL, TYPE_SCENERY, TYPE_WALL};
+use arcanum_formats::object::{TYPE_CONTAINER, TYPE_GENERIC, TYPE_PORTAL, TYPE_SCENERY, TYPE_WALL, TYPE_WEAPON};
 use arcanum_sim::{LoadedMap, object_location};
 use bevy::image::{ImageFilterMode, ImageSampler};
 use bevy::prelude::*;
@@ -107,9 +107,15 @@ impl ObjectArt {
     }
 }
 
-/// The frame an object's art id shows (0x502b50): walls always 0, portals and scenery bits 14..18.
+/// The frame an object's art id shows (0x502b50): walls and items always 0 (an item's bits
+/// 14..16 are part of its key), portals, scenery and containers bits 14..18.
 pub fn object_frame(id: ArtId) -> usize {
-    if id.art_type() == 1 { 0 } else { ((id.0 >> 14) & 0x1f) as usize }
+    if matches!(id.art_type(), 1 | 6) { 0 } else { ((id.0 >> 14) & 0x1f) as usize }
+}
+
+/// The rotation an object's art id shows: bits 11..13, except items, which have one (0x502880).
+pub fn object_rotation(id: ArtId) -> usize {
+    if id.art_type() == 6 { 0 } else { id.rotation() as usize }
 }
 
 /// Object flags the original's object pass skips (0x43b390): 0x1 and 0x2 (the default mask at
@@ -121,6 +127,13 @@ pub const FLAT_FLAG: i32 = 0x4;
 
 /// The object types drawn.
 const DRAWN_OBJECTS: [u32; 3] = [TYPE_WALL, TYPE_PORTAL, TYPE_SCENERY];
+
+/// Whether this client draws objects of `object_type` from its own copy of the map: walls,
+/// portals and scenery from the sectors, and containers and items lying on the ground from the
+/// `.mob` files. NPCs come from the host.
+fn drawn_here(object_type: u32) -> bool {
+    DRAWN_OBJECTS.contains(&object_type) || object_type == TYPE_CONTAINER || (TYPE_WEAPON..=TYPE_GENERIC).contains(&object_type)
+}
 
 fn enter_world(
     mut commands: Commands,
@@ -226,11 +239,13 @@ fn draw_sectors(mut commands: Commands, mut client: ResMut<ClientMap>, assets: R
         // objects in list order).
         let mut on_tile: HashMap<TileLoc, usize> = HashMap::new();
         let protos = &client.map.prototypes;
-        for object in &sector.objects {
+        // The sector's own objects, then the map's mobile objects on it (containers and items;
+        // the original's order between the two is not traced).
+        for object in sector.objects.iter().chain(client.map.mobiles.get(&id).into_iter().flatten()) {
             // Fields an object does not store are its prototype's.
             let int = |name| protos.int(object, name);
             let flags = int("flags").unwrap_or(0);
-            if !DRAWN_OBJECTS.contains(&object.object_type) || flags & HIDDEN_FLAGS != 0 {
+            if !drawn_here(object.object_type) || flags & HIDDEN_FLAGS != 0 {
                 continue;
             }
             let Some(aid) = protos.art_id(object) else {
@@ -256,7 +271,7 @@ fn draw_sectors(mut commands: Commands, mut client: ResMut<ClientMap>, assets: R
                 Sprite::default(),
                 Transform::from_translation(at.extend(object_depth(location, origin, flags & FLAT_FLAG != 0, tile_order))),
                 Visibility::Hidden,
-                PendingArt { art: handle, rotation: aid.rotation() as usize, frame: object_frame(aid), hotspot: Some(ObjectArt::of(aid)) },
+                PendingArt { art: handle, rotation: object_rotation(aid), frame: object_frame(aid), hotspot: Some(ObjectArt::of(aid)) },
                 DespawnOnExit(AppState::InGame),
             ));
         }
@@ -383,6 +398,14 @@ mod tests {
         assert_eq!(ObjectArt::of(wall(3, 1)).hotspot(c, size), IVec2::new(68, 30), "mirrored: 80 - 10 - 2");
         let scenery = ArtId((4 << 28) | (7 << 11) | 1);
         assert_eq!(ObjectArt::of(scenery), ObjectArt { half_tile: false, mirrored: false });
+    }
+
+    #[test]
+    fn items_show_their_one_frame_and_rotation() {
+        let staff = ArtId(0x6004_0340 | 5 << 14 | 1 << 11);
+        assert_eq!((object_frame(staff), object_rotation(staff)), (0, 0));
+        let crate_ = ArtId(0x7180_0040 | 1 << 14);
+        assert_eq!(object_frame(crate_), 1);
     }
 
     #[test]
