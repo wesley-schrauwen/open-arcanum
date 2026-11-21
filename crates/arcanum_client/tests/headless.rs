@@ -2118,6 +2118,7 @@ fn creation_data() -> arcanum_client::create_character::CreationData {
         first_year: 1885,
         inven_ui: MesFile::default(),
         critter: MesFile::default(),
+        item: MesFile::default(),
     }
 }
 
@@ -2507,7 +2508,7 @@ fn the_inventory_screen_opens_from_the_bar_and_closes_the_character_screen() {
     app.update();
     press_new_game(&mut app, NewGameAction::Next);
     // The host sends the PC's inventory with its spawn.
-    update_until(&mut app, |app| state(app) == AppState::InGame && app.world().resource::<PcInventory>().0.is_some());
+    update_until(&mut app, |app| state(app) == AppState::InGame && app.world().resource::<PcInventory>().shown().is_some());
     let button = |app: &mut App, action: HudAction| {
         let world = app.world_mut();
         world.query::<(Entity, &HudAction)>().iter(world).find(|(_, a)| **a == action).unwrap().0

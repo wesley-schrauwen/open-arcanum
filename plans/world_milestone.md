@@ -1100,3 +1100,24 @@ attack and defence; item hover help; the encumbrance penalty and item effects; t
 scoring between several candidates (the first one is taken); barter and loot. The text fonts
 were not identified (Flare12Font stands in), and the original's encumbrance line prints a stray
 number that is left out.
+
+## Moving items (after the inventory screen)
+
+- **Rules** (`Inventory::move_item`, from Arcanum.exe 0x573850 / 0x5788c0 / 0x464d20): drag with
+  the button held; in the grid an item lands with its grabbed cell under the cursor, only onto
+  free cells, with no swap; on a paperdoll slot it must pass the fit test (slot kind; both ring
+  slots take rings; two-handed weapons and shields exclude each other; body armour's size bits
+  against the race's body size and its men/women bits), and swaps with the worn item, which
+  goes back to the moved item's cells or the first free spot. Refusals show `mes/item.mes`
+  102-110 in the message box; a bad grid spot is refused silently, as in the original.
+- **Host:** `PlayerIntent::Inventory { seq, request: Move { from, to } }`; the host answers each
+  with `LedgerDelta::Inventory { ack, .. }` and keeps the result in the save. The client
+  previews each move and replays unanswered ones on the host's copy (`PcInventory`).
+- **Checked:** unit tests for grid moves, slots, swaps, the fit test, hit testing and the
+  preview's replay; a host test moves Lugard's dagger off his hand and refuses a move onto his
+  gold; a real-data run moved his dagger and suit into the grid through the host, their slots
+  showing their covers again.
+
+Not done: dropping on the ground and the use and drop boxes, right-click use, stack splitting,
+hexed and no-drop items, the fit test's magick/tech, broken, crippled-arm and animation checks,
+sounds, and the held art's cursor hotspot (the grab point stays under the cursor instead).

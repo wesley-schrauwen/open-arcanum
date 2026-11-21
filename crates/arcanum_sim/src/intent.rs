@@ -28,6 +28,10 @@ pub enum PlayerIntent {
     /// `seq` counts up per client; the host answers each with a
     /// [`SheetUpdate`](crate::LedgerDelta::SheetUpdate) carrying it.
     Sheet { seq: u32, request: crate::SheetRequest },
+    /// A change to the player's own PC's inventory (the inventory screen). `seq` counts up per
+    /// client; the host answers each with an [`Inventory`](crate::LedgerDelta::Inventory)
+    /// carrying it.
+    Inventory { seq: u32, request: crate::InventoryRequest },
     /// The number of the last state sync the client applied. Sent unreliably, about twice a
     /// second; a client far behind gets a [`Resync`](crate::LedgerDelta::Resync).
     SyncAck { number: u32 },

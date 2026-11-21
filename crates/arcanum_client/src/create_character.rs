@@ -95,6 +95,8 @@ pub struct CreationData {
     pub inven_ui: MesFile,
     /// Critter texts (encumbrance levels, 18-24).
     pub critter: MesFile,
+    /// Item texts (the inventory's refusals, 101-119).
+    pub item: MesFile,
     /// The calendar's first year (`rules/gameinit.mes`), for the clock's date.
     pub first_year: u32,
 }
@@ -115,6 +117,7 @@ impl CreationData {
             intgame: mes("mes/intgame.mes").unwrap_or_default(),
             inven_ui: mes("mes/inven_ui.mes").unwrap_or_default(),
             critter: mes("mes/critter.mes").unwrap_or_default(),
+            item: mes("mes/item.mes").unwrap_or_default(),
             first_year: arcanum_sim::GameStart::load(vfs).year,
         })
     }

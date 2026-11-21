@@ -11,7 +11,7 @@ use bevy_ecs::prelude::*;
 use arcanum_rules::RulesData;
 use bevy_time::{Fixed, Time, TimePlugin, TimeUpdateStrategy};
 
-use crate::{Inbox, LoadedMap, MoveRequests, NetIdAllocator, Outbox, SaveStatus, Session, SimRules, SyncClock, Tick, GameClock, advance_clock, WorldSave, WorldState, apply_moves, boot_world, handle_intents, spawn_npcs, stream_sectors, update_activity, PartyPace, update_party_pace, HostRng, npc_idle, sync_state, walk, write_save, PopulatedSectors, UseRequests, ClosingDoors, use_portals, close_doors, SheetRequests, apply_sheet_requests};
+use crate::{Inbox, LoadedMap, MoveRequests, NetIdAllocator, Outbox, SaveStatus, Session, SimRules, SyncClock, Tick, GameClock, advance_clock, WorldSave, WorldState, apply_moves, boot_world, handle_intents, spawn_npcs, stream_sectors, update_activity, PartyPace, update_party_pace, HostRng, npc_idle, sync_state, walk, write_save, PopulatedSectors, UseRequests, ClosingDoors, use_portals, close_doors, SheetRequests, apply_sheet_requests, InventoryRequests, apply_inventory_requests};
 
 /// Host ticks per second.
 pub const TICK_HZ: f64 = 30.0;
@@ -49,8 +49,9 @@ impl Plugin for SimPlugin {
             .init_resource::<HostRng>()
             .init_resource::<UseRequests>()
             .init_resource::<SheetRequests>()
+            .init_resource::<InventoryRequests>()
             .init_resource::<ClosingDoors>()
-            .add_systems(FixedUpdate, (handle_intents, boot_world, apply_sheet_requests, update_party_pace, advance_clock, apply_moves, walk, use_portals, close_doors, stream_sectors, spawn_npcs, update_activity, npc_idle, sync_state, advance_tick, write_save).chain());
+            .add_systems(FixedUpdate, (handle_intents, boot_world, apply_sheet_requests, apply_inventory_requests, update_party_pace, advance_clock, apply_moves, walk, use_portals, close_doors, stream_sectors, spawn_npcs, update_activity, npc_idle, sync_state, advance_tick, write_save).chain());
     }
 }
 

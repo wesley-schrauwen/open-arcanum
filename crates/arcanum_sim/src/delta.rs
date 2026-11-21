@@ -128,8 +128,9 @@ pub enum LedgerDelta {
     /// The host's copy of the player's own PC's sheet after the sheet request numbered `ack`
     /// (applied or refused). The client takes it and replays its later requests on top.
     SheetUpdate { ack: u32, sheet: arcanum_rules::CharacterSheet },
-    /// What the player's own PC carries: sent with its spawn, and again when it changes.
-    Inventory { net_id: NetId, inventory: crate::Inventory },
+    /// What the player's own PC carries: sent with its spawn (`ack` 0), and after each inventory
+    /// request numbered `ack`, taken or refused. The client replays its later requests on top.
+    Inventory { net_id: NetId, ack: u32, inventory: crate::Inventory },
     /// A PC's speed stat changed (it raised its dexterity): clients time its walk from it.
     Speed { net_id: NetId, speed: i32 },
     /// An entity is gone.

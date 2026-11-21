@@ -448,7 +448,7 @@ pub fn boot_world(
             kit
         });
         // Only its player sees what it carries.
-        outbox.0.push((player, LedgerDelta::Inventory { net_id, inventory: inventory.clone() }));
+        outbox.0.push((player, LedgerDelta::Inventory { net_id, ack: 0, inventory: inventory.clone() }));
         commands.spawn((net_id, PlayerControlled(player), Position(saved.position), Sheet(sheet.clone()), look, gait, inventory));
         map.load_around(vfs, saved.position);
         session.players.insert(player, SessionPlayer::InWorld(net_id));
@@ -651,6 +651,22 @@ mod tests {
         let saved = sim.app.world().resource::<WorldState>().0.clone().unwrap();
         assert_eq!(saved.players[&PlayerId(1)].inventory.as_ref(), Some(kit), "kept in the save");
         assert_eq!(saved.players[&PlayerId(2)].inventory, Some(crate::Inventory::default()));
+
+        // Moving the dagger off the hand into the grid goes through the host; a move onto a
+        // taken cell is refused, and both are answered.
+        let weapon = crate::Slot::Weapon as i32;
+        let request = |seq, from, to| (PlayerId(1), PlayerIntent::Inventory { seq, request: crate::InventoryRequest::Move { from, to } });
+        sim.receive([request(1, weapon, 55), request(2, 55, 0)]);
+        sim.update();
+        let answers: Vec<_> = sim.take_deltas().into_iter().filter_map(|(p, d)| match d {
+            LedgerDelta::Inventory { ack, inventory, .. } => Some((p.0, ack, inventory)),
+            _ => None,
+        }).collect();
+        assert_eq!(answers.iter().map(|(p, ack, _)| (*p, *ack)).collect::<Vec<_>>(), [(1, 1), (1, 2)]);
+        let at = |inv: &crate::Inventory| inv.items.iter().find(|i| i.prototype == dagger).unwrap().location;
+        assert_eq!(at(&answers[1].2), 55, "the gold is at 0");
+        let saved = sim.app.world().resource::<WorldState>().0.clone().unwrap();
+        assert_eq!(at(saved.players[&PlayerId(1)].inventory.as_ref().unwrap()), 55, "kept in the save");
     }
 
     #[test]

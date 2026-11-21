@@ -211,9 +211,10 @@ fn share_rules(data: Option<Res<CreationData>>, host: Option<NonSendMut<LocalHos
     }
 }
 
-fn send_intents(mut character: ResMut<CharacterHost>, mut sheet: ResMut<crate::pc_sheet::SheetHost>, link: Option<Res<HostLink>>) {
+fn send_intents(mut character: ResMut<CharacterHost>, mut sheet: ResMut<crate::pc_sheet::SheetHost>, inventory: Option<ResMut<crate::inventory_screen::PcInventory>>, link: Option<Res<HostLink>>) {
     let Some(link) = link else { return };
-    for intent in character.take_outgoing().into_iter().chain(sheet.take_outgoing()) {
+    let items = inventory.map(|mut i| i.take_outgoing()).unwrap_or_default();
+    for intent in character.take_outgoing().into_iter().chain(sheet.take_outgoing()).chain(items) {
         if let Err(e) = link.0.send_intent(intent) {
             warn!("cannot reach the host: {e}");
         }
@@ -260,8 +261,8 @@ fn receive_deltas(
     for delta in &deltas {
         character.receive(rules, delta);
         sheet.receive(rules, delta);
-        if let (LedgerDelta::Inventory { inventory: carried, .. }, Some(inv)) = (delta, inventory.as_mut()) {
-            inv.0 = Some(carried.clone());
+        if let (LedgerDelta::Inventory { ack, inventory: carried, .. }, Some(inv)) = (delta, inventory.as_mut()) {
+            inv.receive(*ack, carried.clone());
         }
         if let LedgerDelta::EnterMap { map: name } = delta {
             map.0 = Some(name.clone());

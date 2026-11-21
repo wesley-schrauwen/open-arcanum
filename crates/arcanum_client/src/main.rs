@@ -139,7 +139,7 @@ fn main() {
         app.add_systems(
             Update,
             (|inventory: Res<arcanum_client::inventory_screen::PcInventory>, mut panel: ResMut<arcanum_client::inventory_screen::InventoryPanel>, mut done: Local<bool>| {
-                if !*done && inventory.0.is_some() {
+                if !*done && inventory.shown().is_some() {
                     *done = true;
                     panel.open = true;
                 }

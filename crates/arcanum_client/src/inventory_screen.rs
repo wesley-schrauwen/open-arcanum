@@ -15,17 +15,24 @@
 //! - **Text:** "Total weight: %d stone", "Encumbrance: %s" (`mes/critter.mes` 18 + level) and
 //!   "Speed: %d" at (145, 29 / 44 / 59, 185, 15) (`mes/inven_ui.mes` 9, 6, 10, 11); gold and the
 //!   four ammo counts at (729, 70 + 23 n, 58, 20).
+//! - **Moving** (callback 0x573850): press picks the item under the cursor up and release drops
+//!   it; while held it is not drawn in place, and its inventory art follows the cursor. On the
+//!   grid it lands with the grabbed cell under the cursor (cursor cell minus the grab, linear as
+//!   the original's); on a slot it is worn if the fit test passes. Off the grid and slots it goes
+//!   back. Each move goes to the host ([`PcInventory`]); refusals with a message (`mes/item.mes`)
+//!   go to the message box. The original's cursor hotspot for the held art was not decoded: here
+//!   the point it was grabbed by stays under the cursor.
 //! - Toggled by the top bar's inventory button and `I`; Escape closes it; opening it closes the
 //!   character screen and the other way round. Clicks on it do not walk.
 //!
-//! Not built: picking items up, moving, using, dropping, the arrange button, total attack and
+//! Not built: using, dropping on the ground or the boxes, splitting stacks, the arrange button, total attack and
 //! defence, item hover help, barter and loot modes. The original's fonts for the text and
 //! numbers were not identified (Flare12Font stands in). The original's encumbrance line also
 //! prints a stray number from its stack (`%s: %s (%d)` given two values); it is left out.
 
 use arcanum_formats::art_id::{ArtId, ArtIndex};
 use arcanum_formats::object::{Prototypes, TYPE_ARMOR, TYPE_WEAPON};
-use arcanum_sim::{AMMO_TYPES, CarriedItem, GOLD, Inventory, Slot, in_grid};
+use arcanum_sim::{AMMO_TYPES, CarriedItem, GOLD, Inventory, InventoryRequest, ItemInfo, ItemRefusal, PlayerIntent, Slot, Wearer, in_grid};
 use bevy::prelude::*;
 use bevy::ui_widgets::Activate;
 
@@ -62,9 +69,100 @@ pub struct InventoryPanel {
     pub open: bool,
 }
 
-/// What the player's own PC carries, as the host last sent it.
+/// The client's copy of its own PC's inventory. As with the sheet ([`crate::pc_sheet`]): a move
+/// is applied at once to a preview with the host's rules and sent as a numbered request; the
+/// host answers each with its copy, and the preview becomes that copy with the unanswered
+/// requests replayed on top.
 #[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
-pub struct PcInventory(pub Option<Inventory>);
+pub struct PcInventory {
+    /// The host's copy, once it has sent one (with the PC's spawn).
+    confirmed: Option<Inventory>,
+    /// What the screen shows.
+    preview: Option<Inventory>,
+    pending: Vec<(u32, InventoryRequest)>,
+    last_seq: u32,
+    outgoing: Vec<PlayerIntent>,
+    /// Host answers not yet settled (they need the item facts to replay on).
+    incoming: Vec<(u32, Inventory)>,
+}
+
+impl PcInventory {
+    /// What the screen shows, once the host has sent it.
+    pub fn shown(&self) -> Option<&Inventory> {
+        self.preview.as_ref()
+    }
+
+    /// Applies `request` to the preview and queues it for the host. A refused one changes
+    /// nothing and is not sent.
+    pub fn request(&mut self, request: InventoryRequest, wearer: Wearer, info: impl Fn(u32) -> Option<ItemInfo>) -> Result<(), ItemRefusal> {
+        let Some(preview) = &self.preview else { return Err(ItemRefusal::Silent) };
+        self.preview = Some(preview.apply(&request, wearer, info)?);
+        self.last_seq += 1;
+        self.pending.push((self.last_seq, request.clone()));
+        self.outgoing.push(PlayerIntent::Inventory { seq: self.last_seq, request });
+        Ok(())
+    }
+
+    /// Requests for the host, oldest first.
+    pub fn take_outgoing(&mut self) -> Vec<PlayerIntent> {
+        std::mem::take(&mut self.outgoing)
+    }
+
+    /// Keeps the host's answer for [`Self::settle`].
+    pub fn receive(&mut self, ack: u32, inventory: Inventory) {
+        self.incoming.push((ack, inventory));
+    }
+
+    /// Takes the host's answers: the preview becomes the newest one with the unanswered
+    /// requests replayed on top.
+    pub fn settle(&mut self, wearer: Wearer, info: impl Fn(u32) -> Option<ItemInfo>) {
+        let newest = self.incoming.pop();
+        self.incoming.clear();
+        let Some((ack, inventory)) = newest else { return };
+        self.pending.retain(|(seq, _)| *seq > ack);
+        let mut preview = inventory.clone();
+        for (_, request) in &self.pending {
+            if let Ok(changed) = preview.apply(request, wearer, &info) {
+                preview = changed;
+            }
+        }
+        self.confirmed = Some(inventory);
+        self.preview = Some(preview);
+    }
+
+    /// Whether host answers wait to be settled.
+    pub fn unsettled(&self) -> bool {
+        !self.incoming.is_empty()
+    }
+}
+
+/// The item being dragged: where it was, and the cursor's place on it.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct HeldItem(pub Option<Held>);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Held {
+    /// Its location when picked up.
+    pub from: i32,
+    /// Cursor cell minus the item's location, as the original keeps it (0x683470); 0 off a slot.
+    pub grab: i32,
+    /// Where the cursor sat on the item's art, in pixels from its top-left.
+    pub offset: Vec2,
+}
+
+/// The held item's art, following the cursor.
+#[derive(Component)]
+pub struct HeldArt;
+
+/// Item art handles by path, kept so the art is not unloaded before it loads.
+#[derive(Resource, Debug, Default)]
+pub struct ItemArtCache(std::collections::HashMap<String, Handle<ArtFrames>>);
+
+impl ItemArtCache {
+    fn get(&mut self, assets: &AssetServer, path: String) -> Handle<ArtFrames> {
+        self.0.entry(path.clone()).or_insert_with(|| assets.load(path)).clone()
+    }
+}
 
 /// The screen's root.
 #[derive(Component)]
@@ -94,12 +192,15 @@ impl Plugin for InventoryScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InventoryPanel>()
             .init_resource::<PcInventory>()
-            .add_systems(OnExit(AppState::InGame), |mut panel: ResMut<InventoryPanel>, mut inv: ResMut<PcInventory>| {
+            .init_resource::<HeldItem>()
+            .init_resource::<ItemArtCache>()
+            .add_systems(OnExit(AppState::InGame), |mut panel: ResMut<InventoryPanel>, mut inv: ResMut<PcInventory>, mut held: ResMut<HeldItem>| {
                 *panel = InventoryPanel::default();
                 *inv = PcInventory::default();
+                *held = HeldItem::default();
             })
             .add_systems(PreUpdate, toggle_on_keys.run_if(in_state(AppState::InGame)).after(bevy::input::InputSystems))
-            .add_systems(Update, (one_panel_at_a_time, show_panel, show_items).chain().run_if(in_state(AppState::InGame)))
+            .add_systems(Update, (settle_inventory, one_panel_at_a_time, show_panel, drag_items, show_items, follow_cursor).chain().run_if(in_state(AppState::InGame)))
             .add_observer(on_hud_button);
     }
 }
@@ -144,6 +245,7 @@ fn show_panel(mut commands: Commands, panel: Res<InventoryPanel>, roots: Query<E
         for root in &roots {
             commands.entity(root).despawn();
         }
+        commands.insert_resource(HeldItem::default());
         return;
     }
     if !roots.is_empty() {
@@ -199,13 +301,174 @@ fn item_art(prototypes: &Prototypes, item: &CarriedItem) -> Option<ArtId> {
     p.int(field).or_else(|| p.int("item_inv_aid")).map(|v| ArtId(v as u32))
 }
 
-/// Item art handles by path.
-type ArtHandles = std::collections::HashMap<String, Handle<ArtFrames>>;
+/// The first frame of art `id`, if loaded (a handle is kept in `cache`).
+fn art_frame(index: Option<&ArtIndex>, cache: &mut ItemArtCache, assets: &AssetServer, frames: &Assets<ArtFrames>, id: ArtId) -> Option<(Handle<Image>, UVec2)> {
+    let handle = cache.get(assets, index?.path(id)?);
+    frames.get(&handle).and_then(|f| f.rotation(0)?.frame(0).map(|(i, _, s)| (i.clone(), s)))
+}
+
+/// Item facts for the client's rules, footprints from the loaded inventory art.
+fn client_info<'a>(prototypes: &'a Prototypes, sizes: &'a std::collections::HashMap<u32, (u32, u32)>) -> impl Fn(u32) -> Option<ItemInfo> + 'a {
+    move |n| prototypes.get(n).map(|p| ItemInfo::of(p, |id| sizes.get(&id.0).copied()))
+}
+
+/// The loaded inventory art sizes of everything in `inv`, by art id.
+fn inventory_sizes(inv: &Inventory, prototypes: &Prototypes, index: Option<&ArtIndex>, cache: &mut ItemArtCache, assets: &AssetServer, frames: &Assets<ArtFrames>) -> std::collections::HashMap<u32, (u32, u32)> {
+    let mut sizes = std::collections::HashMap::new();
+    for item in &inv.items {
+        if let Some(id) = prototypes.get(item.prototype).and_then(|p| p.int("item_inv_aid"))
+            && let Some((_, s)) = art_frame(index, cache, assets, frames, ArtId(id as u32))
+        {
+            sizes.insert(id as u32, (s.x, s.y));
+        }
+    }
+    sizes
+}
+
+/// Who wears the items: the local PC's sheet.
+fn wearer(sheet: &crate::pc_sheet::SheetHost) -> Wearer {
+    sheet.sheet().map_or(Wearer { race: 0, gender: 1 }, |s| Wearer { race: s.race, gender: s.gender })
+}
+
+/// Takes the host's answers once the item facts are known.
+fn settle_inventory(mut inventory: ResMut<PcInventory>, sheet: Res<crate::pc_sheet::SheetHost>, client: Option<Res<crate::world_render::ClientMap>>, mut cache: ResMut<ItemArtCache>, assets: Res<AssetServer>, frames: Res<Assets<ArtFrames>>) {
+    if !inventory.unsettled() {
+        return;
+    }
+    let empty = Prototypes::default();
+    let prototypes = client.as_ref().map_or(&empty, |c| &c.map.prototypes);
+    let index = client.as_ref().and_then(|c| c.art_index());
+    let newest = inventory.incoming.last().map(|(_, i)| i.clone()).unwrap_or_default();
+    let sizes = inventory_sizes(&newest, prototypes, index, &mut cache, &assets, &frames);
+    inventory.settle(wearer(&sheet), client_info(prototypes, &sizes));
+}
+
+/// The 800x600 point under the window cursor (the screens are centred, scaled to the height).
+pub fn screen_point(window: Vec2, cursor: Vec2) -> Vec2 {
+    let scale = window.y / 600.0;
+    Vec2::new((cursor.x - (window.x / 2.0 - 400.0 * scale)) / scale, cursor.y / scale)
+}
+
+/// The grid cell or paperdoll slot at `point` in the band (0x575cb0).
+pub fn location_at(point: Vec2) -> Option<i32> {
+    let (col, row) = (((point.x - GRID.x) / 32.0).floor(), ((point.y - GRID.y) / 32.0).floor());
+    if (0.0..10.0).contains(&col) && (0.0..12.0).contains(&row) {
+        return Some(row as i32 * 10 + col as i32);
+    }
+    SLOTS.iter().find(|(_, r, _)| point.x >= r[0] && point.x < r[0] + r[2] && point.y >= r[1] && point.y < r[1] + r[3]).map(|(s, ..)| *s as i32)
+}
+
+/// The item at `point` in the band (0x575fa0): a grid item covering the cell, or the worn one.
+pub fn item_at(inv: &Inventory, point: Vec2, info: impl Fn(u32) -> Option<ItemInfo>) -> Option<&CarriedItem> {
+    let location = location_at(point)?;
+    if !in_grid(location) {
+        return inv.items.iter().find(|i| i.location == location);
+    }
+    let (col, row) = (location % 10, location / 10);
+    inv.items.iter().filter(|i| in_grid(i.location)).find(|i| {
+        let (w, h) = info(i.prototype).map_or((1, 1), |x| x.cells);
+        let (c, r) = (i.location % 10, i.location / 10);
+        (c..c + w).contains(&col) && (r..r + h).contains(&row)
+    })
+}
+
+/// Where a held item lands for a release at `point`: the cursor's cell minus the grab, or the
+/// slot (0x573850 release). `None` (off the grid and slots, or before row 0) returns it.
+pub fn drop_target(point: Vec2, held: Held) -> Option<i32> {
+    let at = location_at(point)?;
+    if in_grid(at) {
+        let to = at - held.grab;
+        (to >= 0).then_some(to)
+    } else {
+        Some(at)
+    }
+}
+
+/// Press picks the item under the cursor up; release drops it where the cursor is, through
+/// the host. Refusals with a message go to the message box.
+#[allow(clippy::too_many_arguments)]
+fn drag_items(
+    panel: Res<InventoryPanel>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    mut held: ResMut<HeldItem>,
+    mut inventory: ResMut<PcInventory>,
+    sheet: Res<crate::pc_sheet::SheetHost>,
+    client: Option<Res<crate::world_render::ClientMap>>,
+    data: Option<Res<CreationData>>,
+    (mut cache, assets, frames): (ResMut<ItemArtCache>, Res<AssetServer>, Res<Assets<ArtFrames>>),
+    (boxed, time): (Option<ResMut<crate::message_box::MessageBox>>, Option<Res<Time<Real>>>),
+) {
+    if !panel.open || !(buttons.just_pressed(MouseButton::Left) || buttons.just_released(MouseButton::Left)) {
+        return;
+    }
+    let Some(point) = windows.iter().find_map(|w| w.cursor_position().map(|c| screen_point(w.size(), c))) else { return };
+    let point = point - Vec2::new(0.0, TOP_BAR_HEIGHT);
+    let Some(inv) = inventory.shown().cloned() else { return };
+    let empty = Prototypes::default();
+    let prototypes = client.as_ref().map_or(&empty, |c| &c.map.prototypes);
+    let index = client.as_ref().and_then(|c| c.art_index());
+    let sizes = inventory_sizes(&inv, prototypes, index, &mut cache, &assets, &frames);
+    let info = client_info(prototypes, &sizes);
+    if buttons.just_pressed(MouseButton::Left) && held.0.is_none() {
+        let Some(item) = item_at(&inv, point, &info) else { return };
+        let grab = location_at(point).filter(|l| in_grid(*l)).map_or(0, |l| l - item.location);
+        let art = item_art(prototypes, item).and_then(|id| art_frame(index, &mut cache, &assets, &frames, id));
+        let corner = art.and_then(|(_, s)| Some(centred(placement(item, info(item.prototype).map_or((1, 1), |i| i.cells))?, s, in_grid(item.location)))).unwrap_or(point);
+        held.0 = Some(Held { from: item.location, grab, offset: point - corner });
+    } else if buttons.just_released(MouseButton::Left)
+        && let Some(h) = held.0.take()
+        && let Some(to) = drop_target(point, h)
+        && to != h.from
+        && let Err(refusal) = inventory.request(InventoryRequest::Move { from: h.from, to }, wearer(&sheet), &info)
+        && let (Some(id), Some(mut boxed)) = (refusal.message(), boxed)
+    {
+        let text = data.as_ref().and_then(|d| d.item.get(id)).unwrap_or("").to_string();
+        boxed.post(crate::message_box::BoxMessage::plain(text), time.map_or(0.0, |t| t.elapsed_secs_f64()));
+    }
+}
+
+/// Draws the held item at the cursor, keeping the point it was grabbed by under it.
+#[allow(clippy::too_many_arguments)]
+fn follow_cursor(
+    mut commands: Commands,
+    held: Res<HeldItem>,
+    inventory: Res<PcInventory>,
+    windows: Query<&Window>,
+    roots: Query<Entity, With<InventoryScreen>>,
+    mut arts: Query<(Entity, &mut Node), With<HeldArt>>,
+    client: Option<Res<crate::world_render::ClientMap>>,
+    (mut cache, assets, frames): (ResMut<ItemArtCache>, Res<AssetServer>, Res<Assets<ArtFrames>>),
+) {
+    let item = held.0.and_then(|h| Some((h, inventory.shown()?.items.iter().find(|i| i.location == h.from)?.clone())));
+    let (Some((h, item)), Ok(root)) = (item, roots.single()) else {
+        for (e, _) in &arts {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
+    let Some(point) = windows.iter().find_map(|w| w.cursor_position().map(|c| screen_point(w.size(), c))) else { return };
+    let corner = point - h.offset;
+    if let Ok((_, mut node)) = arts.single_mut() {
+        node.left = px(corner.x);
+        node.top = px(corner.y);
+        return;
+    }
+    let empty = Prototypes::default();
+    let prototypes = client.as_ref().map_or(&empty, |c| &c.map.prototypes);
+    let index = client.as_ref().and_then(|c| c.art_index());
+    // The original's cursor shows the inventory art (field 93) wherever the item was.
+    let grid_item = CarriedItem { location: 0, ..item };
+    let Some((image, size)) = item_art(prototypes, &grid_item).and_then(|id| art_frame(index, &mut cache, &assets, &frames, id)) else { return };
+    let art = commands.spawn((HeldArt, bevy::picking::Pickable::IGNORE, ImageNode::new(image), at(rect(corner, Vec2::new(size.x as f32, size.y as f32))))).id();
+    commands.entity(root).add_child(art);
+}
 
 #[allow(clippy::too_many_arguments)]
 fn show_items(
     mut commands: Commands,
     inventory: Res<PcInventory>,
+    held: Res<HeldItem>,
     sheet: Res<crate::pc_sheet::SheetHost>,
     client: Option<Res<crate::world_render::ClientMap>>,
     data: Option<Res<CreationData>>,
@@ -213,17 +476,17 @@ fn show_items(
     roots: Query<Entity, With<InventoryScreen>>,
     contents: Query<Entity, With<InventoryContent>>,
     added: Query<(), Added<InventoryScreen>>,
-    (assets, frames, mut pending, mut handles): (Res<AssetServer>, Res<Assets<ArtFrames>>, Local<bool>, Local<ArtHandles>),
+    (assets, frames, mut pending, mut cache): (Res<AssetServer>, Res<Assets<ArtFrames>>, Local<bool>, ResMut<ItemArtCache>),
 ) {
     let Ok(root) = roots.single() else { return };
-    if !inventory.is_changed() && added.is_empty() && !*pending {
+    if !inventory.is_changed() && !held.is_changed() && added.is_empty() && !*pending {
         return;
     }
     *pending = false;
     for old in &contents {
         commands.entity(old).despawn();
     }
-    let Some(inv) = &inventory.0 else { return };
+    let Some(inv) = inventory.shown() else { return };
     let empty = Prototypes::default();
     let prototypes = client.as_ref().map_or(&empty, |c| &c.map.prototypes);
     let index = client.as_ref().and_then(|c| c.art_index());
@@ -234,11 +497,11 @@ fn show_items(
             content.push(commands.spawn((InventoryContent, bevy::picking::Pickable::IGNORE, ImageNode::new(assets.load(art(cover))), Node { width: Val::Auto, height: Val::Auto, ..at(band(r[0], r[1], r[2], r[3])) })).id());
         }
     }
-    for item in &inv.items {
-        let Some(path) = item_art(prototypes, item).and_then(|id| index.and_then(|i: &ArtIndex| i.path(id))) else { continue };
-        // Kept: the art would unload before it loads once the last handle is dropped.
-        let handle = handles.entry(path.clone()).or_insert_with(|| assets.load(path)).clone();
-        let Some((image, _, size)) = frames.get(&handle).and_then(|f| f.rotation(0)?.frame(0).map(|(i, c, s)| (i.clone(), c, s))) else {
+    // The held item is not drawn where it was (item flag 0x10, 0x4a50d0).
+    let held_at = held.0.map(|h| h.from);
+    for item in inv.items.iter().filter(|i| Some(i.location) != held_at) {
+        let Some(id) = item_art(prototypes, item) else { continue };
+        let Some((image, size)) = art_frame(index, &mut cache, &assets, &frames, id) else {
             // Not loaded yet: draw again next frame.
             *pending = true;
             continue;
@@ -290,6 +553,51 @@ fn text_cell(commands: &mut Commands, fonts: &ArcanumFonts, which: InventoryText
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sword(n: u32) -> Option<ItemInfo> {
+        (n == 1).then_some(ItemInfo { kind: TYPE_WEAPON, inventory_art: 0, cells: (1, 3), weight: 1, magic_weight_adj: 0, complexity: 0, generic_flags: 0, weapon_flags: 0, armor_flags: 0 })
+    }
+
+    #[test]
+    fn the_cursor_finds_cells_slots_and_items() {
+        assert_eq!(screen_point(Vec2::new(1600.0, 1200.0), Vec2::new(800.0, 600.0)), Vec2::new(400.0, 300.0));
+        assert_eq!(screen_point(Vec2::new(2560.0, 1200.0), Vec2::new(480.0, 0.0)), Vec2::new(0.0, 0.0), "a wide window centres the screen");
+        assert_eq!(location_at(Vec2::new(368.0, 8.0)), Some(0));
+        assert_eq!(location_at(Vec2::new(368.0 + 32.0 * 9.5, 8.0 + 32.0 * 11.5)), Some(119));
+        assert_eq!(location_at(Vec2::new(30.0, 200.0)), Some(Slot::Weapon as i32));
+        assert_eq!(location_at(Vec2::new(700.0, 200.0)), None);
+        let inv = Inventory { items: vec![CarriedItem { prototype: 1, location: 13, quantity: 0 }] };
+        let on = |cell: i32| Vec2::new(368.0 + 32.0 * (cell % 10) as f32 + 5.0, 8.0 + 32.0 * (cell / 10) as f32 + 5.0);
+        assert!(item_at(&inv, on(33), sword).is_some(), "the footprint's last cell");
+        assert!(item_at(&inv, on(43), sword).is_none());
+        // Picked up by its middle cell, dropped with that cell under the cursor.
+        let held = Held { from: 13, grab: 10, offset: Vec2::ZERO };
+        assert_eq!(drop_target(on(55), held), Some(45));
+        assert_eq!(drop_target(on(5), held), None, "above row 0 it goes back");
+        assert_eq!(drop_target(Vec2::new(30.0, 200.0), held), Some(Slot::Weapon as i32));
+    }
+
+    #[test]
+    fn moves_show_at_once_and_the_hosts_answers_win() {
+        let man = Wearer { race: 0, gender: 1 };
+        let mut inv = PcInventory::default();
+        assert!(inv.request(InventoryRequest::Move { from: 0, to: 1 }, man, sword).is_err(), "nothing before the host's copy");
+        inv.receive(0, Inventory { items: vec![CarriedItem { prototype: 1, location: 0, quantity: 0 }] });
+        inv.settle(man, sword);
+        inv.request(InventoryRequest::Move { from: 0, to: 5 }, man, sword).unwrap();
+        inv.request(InventoryRequest::Move { from: 5, to: 7 }, man, sword).unwrap();
+        assert_eq!(inv.shown().unwrap().items[0].location, 7);
+        assert_eq!(inv.take_outgoing().len(), 2);
+        // The host took the first; the second is replayed on its copy.
+        inv.receive(1, Inventory { items: vec![CarriedItem { prototype: 1, location: 5, quantity: 0 }] });
+        inv.settle(man, sword);
+        assert_eq!(inv.shown().unwrap().items[0].location, 7);
+        // The host refused the second: its copy wins.
+        inv.receive(2, Inventory { items: vec![CarriedItem { prototype: 1, location: 5, quantity: 0 }] });
+        inv.settle(man, sword);
+        assert_eq!(inv.shown().unwrap().items[0].location, 5);
+        assert_eq!(inv.request(InventoryRequest::Move { from: 5, to: 1001 }, man, sword), Err(ItemRefusal::WrongSlot));
+    }
 
     #[test]
     fn items_sit_centred_in_their_footprint() {

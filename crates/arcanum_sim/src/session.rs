@@ -60,6 +60,7 @@ pub fn handle_intents(
     mut clock: ResMut<crate::SyncClock>,
     mut uses: ResMut<crate::UseRequests>,
     mut sheets: ResMut<crate::SheetRequests>,
+    mut items: ResMut<crate::InventoryRequests>,
 ) {
     for (player, intent) in inbox.0.drain(..) {
         match intent {
@@ -85,6 +86,7 @@ pub fn handle_intents(
             PlayerIntent::SyncAck { number } => clock.acked(player, number),
             PlayerIntent::UsePortal { door, seq } => uses.0.push((player, door, seq)),
             PlayerIntent::Sheet { seq, request } => sheets.0.push((player, seq, request)),
+            PlayerIntent::Inventory { seq, request } => items.0.push((player, seq, request)),
         }
     }
 }
