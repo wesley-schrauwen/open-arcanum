@@ -892,7 +892,7 @@ Not done:
 - **Host:** `LedgerDelta::PcStatus` gives every player each PC's name, portrait stem and hit
   point and fatigue pools, with the PC's `Spawn`. Nothing damages or tires a PC yet, so the
   pools are full.
-- **Cursor:** `cursor.art` (art 0, hotspot (0, 3)) for the whole game, scaled by whole pixels.
+- **Cursor:** `cursor.art` (art 0) for the whole game. Hotspot at the arrow tip (0, 0); the art's centre (0, 3) is three rows below it and put clicks below the visible tip. **Owner's call (2026-11-21):** 30% of the original's share of the screen (art size × height/600 × 0.3), area-resampled.
 - **Checked:** a real-data run shows both bars, full vials reading 030, at 2560x1440.
 
 Not done:
