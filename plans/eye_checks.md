@@ -237,3 +237,9 @@ lights after the walk.
 
 - [ ] A failed pick on an owned lock in sight of its owner: the owner floats "Stop that!" (or
   another gd_npc 4000 line); picked open, the owner attacks.
+
+## Broken items
+
+- [ ] A weapon or armour worn to nothing in a fight comes off into the pack painted red (in the
+  inventory, the hotkey bar, held on the cursor and dropped on the ground); dragging it onto
+  its slot shows "item.mes" 107 and leaves it in the pack.

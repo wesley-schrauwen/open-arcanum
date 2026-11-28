@@ -162,7 +162,7 @@ fn show_hotkeys(
             continue;
         };
         let (corner, shown) = fit(size);
-        let art = commands.spawn((HotkeyItem(slot.0), bevy::picking::Pickable::IGNORE, ImageNode::new(image), at(rect(corner, shown)))).id();
+        let art = commands.spawn((HotkeyItem(slot.0), bevy::picking::Pickable::IGNORE, crate::inventory_screen::item_image(image, &item.wear), at(rect(corner, shown)))).id();
         commands.entity(entity).add_child(art);
     }
 }

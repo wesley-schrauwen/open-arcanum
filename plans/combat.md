@@ -362,8 +362,8 @@ of `combat_design.md` come after the original's rules work.
      (0x43f44a → 0x43cca0: its destroy script first; a 0 answer keeps it). A broken item cannot
      be worn or wielded (0x464d9f: reason 7, `mes/item.mes` 107); NPCs' picks skip it. The
      destroy waits a tick for its script (builder's call). Items with no hit points are left
-     alone (builder's call). Not built: the broken art on the ground and in the inventory
-     (bit 0x400 of the item's art), 0x43f1c0's branches for other types (doors 2, containers 3,
+     alone (builder's call). A broken item is painted red wherever its art is drawn
+     (owner's call, `feat/broken-red`; the original swaps in a broken art, bit 0x400). Not built: 0x43f1c0's branches for other types (doors 2, containers 3,
      traps 17), the weapon's break sound (0x4f1050). Floats "Armor damaged", "Weapon damaged",
      "Armor broken", "Weapon broken". The wear is kept on the item, carried or dropped.
    - Firearms' chance corrected to 5 × level + 25 (tech table 0x4c6ad8 index 1).
