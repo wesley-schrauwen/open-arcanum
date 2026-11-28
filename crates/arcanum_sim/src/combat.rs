@@ -1038,6 +1038,15 @@ pub struct ItemDestroy {
     pub player: Option<PlayerId>,
 }
 
+/// Object `flags` 0x400000 on a weapon: it is never worn, destroyed or blown up (0x4b4e81);
+/// armour has no such test. No prototype has it.
+pub const OF_WEAR_IMMUNE: i32 = 0x40_0000;
+
+/// Whether weapon `o` is of object `flags` [`OF_WEAR_IMMUNE`].
+pub fn immune_to_wear(o: &Object) -> bool {
+    o.int("flags").unwrap_or(0) & OF_WEAR_IMMUNE != 0
+}
+
 /// Item `event` 30: a carried item broke (0x43f1c0 → 0x441980; the attacker the triggerer).
 pub const EVENT_BUST: u32 = 30;
 
@@ -1652,6 +1661,12 @@ impl CombatWorld<'_, '_> {
             crate::ground::save_change(&mut self.world, &self.map, n.sector);
         }
         true
+    }
+
+    /// Whether `critter`'s wielded weapon is of object `flags` [`OF_WEAR_IMMUNE`]: never worn,
+    /// destroyed or blown up (0x4b4e81 clears 0x4000 / 0x8000 / 0x10000).
+    fn weapon_wear_immune(&self, critter: &Seen) -> bool {
+        self.wielded(critter).and_then(|p| self.map.prototypes.get(p)).is_some_and(immune_to_wear)
     }
 
     /// The prototype of the item in `critter`'s weapon slot.
@@ -3328,6 +3343,14 @@ fn strike(commands: &mut Commands, w: &mut CombatWorld, all: &[Seen], attacker: 
     let fighter = &Fighter { situation, stab, fate, ..fighter.clone() };
     let mut outcome = resolve(fighter, &defender, &mut w.rng);
     outcome.thrown = fighter.skill() == SKILL_THROWING;
+    // A weapon immune to wear is never worn, destroyed or blown up (0x4b4e81), its floats too.
+    if w.weapon_wear_immune(attacker) {
+        outcome.effects &= !WEAPON_DESTROYED;
+        outcome.fumble_items &= !WEAPON_DAMAGED;
+    }
+    if w.weapon_wear_immune(victim) {
+        outcome.items &= !WEAPON_DAMAGED;
+    }
     outcome.speed = fighter.speed();
     if let Some(weapon) = fighter.weapon.as_ref().filter(|w| w.uses_ammo()) {
         w.spend_ammo(attacker, weapon.ammo_type, weapon.ammo_per_shot);
@@ -4003,6 +4026,15 @@ mod tests {
         assert!(!Fighter { ammo: 3, ..archer.clone() }.out_of_ammo());
         let sword = Weapon { ammo_type: NO_AMMO, ..Default::default() };
         assert!(!Fighter { weapon: Some(sword), ..Default::default() }.out_of_ammo());
+    }
+
+    #[test]
+    fn a_weapon_of_flags_0x400000_is_immune_to_wear() {
+        use arcanum_formats::object::{TYPE_WEAPON, Value};
+        use arcanum_formats::test_util::ObjectBuilder;
+        let weapon = |flags| Object::parse_instance(&ObjectBuilder::new(TYPE_WEAPON).field("flags", Value::Int32(flags)).build()).unwrap();
+        assert!(immune_to_wear(&weapon(OF_WEAR_IMMUNE)));
+        assert!(!immune_to_wear(&weapon(0)));
     }
 
     #[test]
