@@ -366,6 +366,13 @@ of `combat_design.md` come after the original's rules work.
      (owner's call, `feat/broken-red`; the original swaps in a broken art, bit 0x400). Not built: 0x43f1c0's branches for other types (doors 2, containers 3,
      traps 17), the weapon's break sound (0x4f1050). Floats "Armor damaged", "Weapon damaged",
      "Armor broken", "Weapon broken". The wear is kept on the item, carried or dropped.
+   - Repair (`feat/repair-broken`, 0x4c7160 case 0xc, training 0x4c67f0): nothing to do (505)
+     without damage unless broken in a Master's hands (0x4c7c55-0x4c7c82); `max × chance / 100`
+     restored, at least 1, none with no chance (501); below Master the most falls 10 / 5 / 1 %
+     whether it worked or not (0x4c7daa); a Master loses none, and mends a broken item (art bit
+     0x400 cleared, field 1 only) for 5 % (0x4c7d52-0x4c7d83), always 500. Below Master a broken
+     item stays broken. Not built: a Master's 1 % on a critical failure with no chance
+     (0x4c7d9f; 0x4c82e0 not decoded); the one-shot forced full repair (0x4f5270(src, 9)).
    - Firearms' chance corrected to 5 × level + 25 (tech table 0x4c6ad8 index 1).
    - Ordinary hits (`feat/armour-wear`): the damage array is normal, poison, electrical, fire,
      fatigue at +0x44 (entry [0x14] is fire, not item damage). A hit with fire damage (0x4b454f)
