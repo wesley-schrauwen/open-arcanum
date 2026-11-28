@@ -2981,6 +2981,70 @@ mod tests {
         assert_eq!(sim.app.world().get::<Position>(entity).unwrap().0, next, "its walk ends on the trap");
     }
 
+    /// An NPC walking towards a trap object with Spot Trap 5 points (level 20) and Intelligence 20
+    /// (90 %): `follower` gives it a leader, `pc_set` marks the trap a PC's. Returns the NPC's
+    /// tile after the walk, its start, and the trap's flags.
+    fn npc_walks_at_a_trap(follower: bool, pc_set: bool) -> (TileLoc, TileLoc, i32) {
+        use arcanum_formats::object::{Array, Object, TYPE_NPC, TYPE_TRAP, Value};
+        use arcanum_formats::test_util::ObjectBuilder;
+        let dir = tempfile::tempdir().unwrap();
+        write_map(dir.path());
+        let mut sim = booted(dir.path(), save(&[(7, "Virgil", TileLoc { x: 70, y: 70 })]));
+        let sector = SectorId::new(1, 1);
+        let (entity, npc_index, at) = {
+            let world = sim.app.world_mut();
+            let (e, s, p) = world.query::<(Entity, &crate::NpcSource, &Position)>().iter(world).find(|(_, s, _)| s.sector == sector).unwrap();
+            (e, s.index, p.0)
+        };
+        let next = TileLoc { x: at.x + 1, y: at.y };
+        let tile = |t: TileLoc| Value::Int64(Some(i64::from(t.x) | (i64::from(t.y) << 32)));
+        let array = |values: &[i32]| Value::Array(Some(Array { elem_size: 4, id: 1, data: values.iter().flat_map(|x| x.to_le_bytes()).collect(), bitset: vec![(1u32 << values.len()) - 1, 0] }));
+        let index = {
+            let mut map = sim.app.world_mut().resource_mut::<LoadedMap>();
+            let mut skills = [0; 8];
+            skills[crate::SKILL_SPOT_TRAP] = 5;
+            let mut stats = [0; 5];
+            stats[4] = 20;
+            let old = &map.mobiles[&sector][npc_index as usize];
+            let mut npc = ObjectBuilder::new(TYPE_NPC).field("location", tile(at)).field("critter_basic_skill_idx", array(&skills)).field("critter_stat_base_idx", array(&stats));
+            npc.id = old.id;
+            map.mobiles.get_mut(&sector).unwrap()[npc_index as usize] = Object::parse_instance(&npc.build()).unwrap();
+            let flags = if pc_set { crate::OF_TRAP_PLACED_BY_PC } else { 0 };
+            let trap = Object::parse_instance(&ObjectBuilder::new(TYPE_TRAP).field("location", tile(next)).field("flags", Value::Int32(flags)).build()).unwrap();
+            let list = map.mobiles.entry(sector).or_default();
+            list.push(trap);
+            let index = list.len() as u32 - 1;
+            map.set_attachment(crate::ScriptObject::Mobile { sector, index }, crate::EVENT_USE, crate::Attachment { flags: 0, counters: [2, 2, 0, 0], number: 30001 });
+            index
+        };
+        let trap = arcanum_formats::script::Script { description: "Mechanical trap".into(), flags: crate::TRAP_MECHANICAL | arcanum_formats::script::RUN_ONCE, lines: vec![] };
+        sim.app.world_mut().resource_mut::<crate::Scripts>().0.get_or_insert_with(Default::default).insert(30001, trap);
+        let mut npc = sim.app.world_mut().entity_mut(entity);
+        npc.insert(crate::Walking { steps: [next, TileLoc { x: next.x + 1, y: next.y }].into(), progress: 0.0 });
+        if follower {
+            npc.insert(crate::follow::Following { leader: PlayerId(7), spread_out: false });
+        }
+        for _ in 0..ticks_for(3) {
+            sim.update();
+        }
+        let flags = sim.app.world().resource::<LoadedMap>().object_flags(sector, index, true).unwrap();
+        (sim.app.world().get::<Position>(entity).unwrap().0, at, flags)
+    }
+
+    #[test]
+    fn a_follower_with_spot_trap_stops_before_a_trap_object() {
+        let (stood, start, flags) = npc_walks_at_a_trap(true, false);
+        assert_eq!(stood, start, "stopped before the step (0x4272b3)");
+        assert_eq!(flags & crate::OF_TRAP_SPOTTED, crate::OF_TRAP_SPOTTED, "a follower marks it (0x4bc125)");
+    }
+
+    #[test]
+    fn a_leaderless_npc_rolls_only_for_a_pcs_trap_and_marks_nothing() {
+        let (stood, start, flags) = npc_walks_at_a_trap(false, true);
+        assert_eq!(stood, start, "stopped before the step");
+        assert_eq!(flags & crate::OF_TRAP_SPOTTED, 0, "not marked (0x4bc11a)");
+    }
+
     #[test]
     fn players_learn_which_npcs_their_pc_has_met() {
         let dir = tempfile::tempdir().unwrap();

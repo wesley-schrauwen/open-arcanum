@@ -14,10 +14,12 @@
 //!   attachment's script number becomes 0); a critical failure springs it on the PC (0x441980
 //!   event 1). `mes/skill_ui.mes` 560 / 561 tell the result.
 //!
-//! - **Spotting while walking** (0x427110, each step): a PC about to step onto a tile with a
-//!   trap object (type 17, list mask 0x20000) it has not spotted rolls Spot Trap, once a tile;
-//!   spotting it stops the walk before the step. Doors and containers are not checked this way.
-//!   NPCs and followers do not roll while walking here; the original's followers do (0x427110).
+//! - **Spotting while walking** (0x427110, each step): a walker about to step onto a tile with
+//!   trap objects (type 17, list mask 0x20000) rolls Spot Trap for each it does not know
+//!   (0x4bbfe0), in turn, once a tile; the first spotted stops the walk before the step
+//!   (0x4272b3). A PC or a follower marks it spotted (0x4bc090: a leaderless NPC does not), and a
+//!   PC is told. Leaderless NPCs know every trap a PC did not set, so roll only for those.
+//!   Doors and containers are not checked this way.
 //!
 //! - **Stepping onto a trap object** (0x4305d0, 0x430ca8-0x430d0f): the walk ends on its tile
 //!   and the walker, PC or NPC, uses it (event 1) ([`spring_stepped_traps`]); not one of
@@ -83,12 +85,30 @@ pub fn roll_disarm(chance: i32, training: u8, light: Option<i32>, rng: &mut crat
     if outcome == crate::PickOutcome::Failure && training >= MASTER { crate::roll_pick(chance, dark, rng) } else { outcome }
 }
 
-/// The tile a walking PC last rolled for.
+/// The tile a walker last rolled Spot Trap for.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpotChecked(pub arcanum_formats::map::TileLoc);
 
-/// The trap objects (type 17) on `at` whose trap is not spotted: sector, index, magical.
-fn unspotted_traps(map: &LoadedMap, host: &mut crate::script_host::ScriptHost, at: arcanum_formats::map::TileLoc) -> Vec<(arcanum_formats::map::SectorId, u32, bool)> {
+/// Who rolls Spot Trap while walking: a PC, a follower (an NPC with a leader) or another NPC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Spotter {
+    Pc,
+    Follower,
+    Npc,
+}
+
+/// Whether `who` knows a trap with object `flags` (0x4bbfe0): a PC or a follower once it is
+/// spotted or a PC set it; another NPC unless a PC set it.
+fn knows(who: Spotter, flags: i32) -> bool {
+    match who {
+        Spotter::Pc | Spotter::Follower => flags & (OF_TRAP_SPOTTED | OF_TRAP_PLACED_BY_PC) != 0,
+        Spotter::Npc => flags & OF_TRAP_PLACED_BY_PC == 0,
+    }
+}
+
+/// The trap objects (type 17) on `at` that `who` does not know, in the list's order: sector,
+/// index, magical.
+fn unknown_traps(map: &LoadedMap, host: &mut crate::script_host::ScriptHost, at: arcanum_formats::map::TileLoc, who: Spotter) -> Vec<(arcanum_formats::map::SectorId, u32, bool)> {
     let sector = at.sector();
     let candidates: Vec<(u32, u32)> = map
         .mobiles
@@ -97,7 +117,10 @@ fn unspotted_traps(map: &LoadedMap, host: &mut crate::script_host::ScriptHost, a
         .flatten()
         .enumerate()
         .filter(|(_, o)| o.object_type == arcanum_formats::object::TYPE_TRAP && crate::object_location(o) == Some(at))
-        .filter(|(_, o)| map.prototypes.int(o, "flags").unwrap_or(0) & (OF_TRAP_SPOTTED | OF_TRAP_PLACED_BY_PC | crate::OF_OFF | crate::OF_DESTROYED) == 0)
+        .filter(|(_, o)| {
+            let flags = map.prototypes.int(o, "flags").unwrap_or(0);
+            flags & (crate::OF_OFF | crate::OF_DESTROYED) == 0 && !knows(who, flags)
+        })
         .map(|(i, _)| (i as u32, map.attachment(crate::ScriptObject::Mobile { sector, index: i as u32 }, crate::EVENT_USE).number))
         .collect();
     candidates
@@ -109,10 +132,20 @@ fn unspotted_traps(map: &LoadedMap, host: &mut crate::script_host::ScriptHost, a
         .collect()
 }
 
-type SpotterQuery<'a> = (Entity, &'a PlayerControlled, &'a mut crate::Walking, &'a Sheet, Option<&'a SpotChecked>);
+type SpotterQuery<'a> = (
+    Entity,
+    Option<&'a PlayerControlled>,
+    Option<&'a crate::NpcSource>,
+    Option<&'a crate::follow::Following>,
+    &'a mut crate::Walking,
+    Option<&'a Sheet>,
+    Option<&'a SpotChecked>,
+);
 
-/// A walking PC rolls Spot Trap for each trap object on the tile its next step enters, once a
-/// tile; spotting one marks it, tells the player and stops the walk where the PC stands.
+/// A walker (a PC or an NPC) rolls Spot Trap for each trap object it does not know on the
+/// tile its next step enters, once a tile, until one is spotted (0x427110). The spotted trap is
+/// marked for a PC or a follower (0x4bc090), the PC is told, and the walk stops where the
+/// walker stands.
 #[allow(clippy::too_many_arguments)]
 pub fn spot_traps_walking(
     mut commands: Commands,
@@ -122,37 +155,48 @@ pub fn spot_traps_walking(
     rules: Res<SimRules>,
     session: Res<crate::Session>,
     mut outbox: ResMut<Outbox>,
-    mut pcs: Query<SpotterQuery>,
+    mut walkers: Query<SpotterQuery>,
     idle: Query<Entity, (With<SpotChecked>, Without<crate::Walking>)>,
     clock: Res<crate::GameClock>,
 ) {
-    // A PC that stopped rolls again on its next walk.
+    // A walker that stopped rolls again on its next walk.
     for entity in &idle {
         commands.entity(entity).remove::<SpotChecked>();
     }
-    for (entity, controlled, mut walking, sheet, checked) in &mut pcs {
+    for (entity, controlled, npc, following, mut walking, sheet, checked) in &mut walkers {
+        let who = match (controlled, npc, following) {
+            (Some(_), _, _) if sheet.is_some() => Spotter::Pc,
+            (None, Some(_), Some(_)) => Spotter::Follower,
+            (None, Some(_), None) => Spotter::Npc,
+            _ => continue,
+        };
         let Some(&next) = walking.steps.front() else { continue };
         if checked.is_some_and(|c| c.0 == next) {
             continue;
         }
         commands.entity(entity).insert(SpotChecked(next));
-        let mut spotted = false;
-        for (sector, index, magical) in unspotted_traps(&map, &mut host, next) {
-            if !roll_spot(&rules.0, &sheet.0, magical, map.luminance_at(next, clock.now), host.rng()) {
-                continue;
-            }
-            spotted = true;
-            let flags = map.object_flags(sector, index, true).unwrap_or(0) | OF_TRAP_SPOTTED;
-            map.set_object_flags(sector, index, true, flags);
-            crate::ground::save_change(&mut world, &map, sector);
-            crate::ground::broadcast(&session, &mut outbox, LedgerDelta::ObjectFlags { sector, index, mobile: true, flags });
+        let light = map.luminance_at(next, clock.now);
+        // An NPC's own Spot Trap and Intelligence (0x4bbe40 takes types 15 and 16).
+        let npc_skill = npc.and_then(|n| map.mobiles.get(&n.sector)?.get(n.index as usize)).map(|o| {
+            let (level, training) = crate::combat::npc_skill(o, &map.prototypes, SKILL_SPOT_TRAP);
+            (level, crate::combat::npc_stat(o, &map.prototypes, 4), training)
+        });
+        let spotted = unknown_traps(&map, &mut host, next, who).into_iter().find(|&(_, _, magical)| match (sheet, npc_skill) {
+            (Some(sheet), _) if who == Spotter::Pc => roll_spot(&rules.0, &sheet.0, magical, light, host.rng()),
+            (_, Some((level, intelligence, training))) => roll_spot_at(level, intelligence, training, magical, light, host.rng()),
+            _ => false,
+        });
+        let Some((sector, index, _)) = spotted else { continue };
+        walking.steps.clear();
+        if who == Spotter::Npc {
+            continue;
         }
-        if spotted {
-            walking.steps.clear();
-            let text = host.trap_line(crate::TRAP_LINE_SPOTTED);
-            if let Some(text) = text {
-                outbox.0.push((controlled.0, LedgerDelta::ScriptMessage { text }));
-            }
+        let flags = map.object_flags(sector, index, true).unwrap_or(0) | OF_TRAP_SPOTTED;
+        map.set_object_flags(sector, index, true, flags);
+        crate::ground::save_change(&mut world, &map, sector);
+        crate::ground::broadcast(&session, &mut outbox, LedgerDelta::ObjectFlags { sector, index, mobile: true, flags });
+        if let (Some(controlled), Some(text)) = (controlled, host.trap_line(crate::TRAP_LINE_SPOTTED)) {
+            outbox.0.push((controlled.0, LedgerDelta::ScriptMessage { text }));
         }
     }
 }
