@@ -464,8 +464,17 @@ of `combat_design.md` come after the original's rules work.
    - Destroy 2 for items destroyed in fights (`feat/items-break`): a weapon a critical miss blew
      up (0x4b4f48) and a broken item worn to nothing (0x43f44a) run it first, the item its
      triggerer and attachee (0x43cd0e); a 0 answer keeps it (0x43cd18). Will kill on sight 22
-     has the one call site, 0x4ae179 in 0x4ae120 (callers 0x412fd0, 0x413130, 0x4ab460, not
-     traced).
+     has the one call site, 0x4ae179 in 0x4ae120. Its callers test only non-zero: 0x4ab460 (the
+     noticing scan) and 0x412fd0 / 0x413130 (an actor's step to a clicked target: hostile, it
+     barks (0x4185f0, 11000) and attacks; not built).
+   - Noticing order and gate (`feat/notice-nearest`): 0x4ab460 takes candidates (mask 0x18000,
+     up to 50) nearest first by 0x441ae0, a down one (0x45d800) 1000 farther, a 0x4af800 one
+     first; the first that 0x4ae120 finds hostile wins. Its gate 0x4ab990: not the dead
+     (0x4aba0c), not beyond 20 tiles (0x4abb38), not a down one for an NPC of `critter_flags`
+     0x10000000 (fights to subdue, 0x4aba3c), not its own follower, not `spell_flags`
+     0x10000. Built for PC candidates: the order, the dead, the 20 tiles, the subduer. Not
+     built: NPC candidates (NPC against NPC, and their own targets taken over), 0x4af800,
+     0x45a580, a Master prowler's escape (0x4abb90-0x4abba9).
    - Resurrect 18 (`feat/resurrect-event`, `magick::resurrect_npcs`): 0x4b58c0 is the heal
      routine (action 0x4b, the Heal skill's case 10, spells at 0x452285). `Dmg_Flags` (names
      0x5b0d14, values 0x5b0d3c): Full 0x1, Resurrect 0x2, Reanimate 0x400002, Death 0x4,
