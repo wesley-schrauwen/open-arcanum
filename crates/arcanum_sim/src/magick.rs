@@ -276,12 +276,21 @@ pub struct Resurrecting(pub Vec<(crate::NpcSource, crate::PlayerId)>);
 /// Reanimate (`Dmg_Flags` 0x400000, 0x4b5a03; no PC spell has it).
 pub const OCF_UNRESURRECTABLE: i32 = 0x100_0000;
 
+/// A raised critter's fatigue damage (0x4b5b16-0x4b5b28).
+pub const RAISED_FATIGUE_DAMAGE: i32 = 10;
+
 /// Script event 18, resurrect: on the dead critter, the healer the triggerer (0x4b5a46).
 pub const EVENT_RESURRECT: u32 = 18;
 
+/// The reaction to the PC healer a raised NPC is brought up to (0x4b5b3d: `0x46 − r`).
+pub const RAISED_REACTION: i32 = 70;
+
 /// A Resurrect reaching a dead NPC (0x4b58c0 with `Dmg_Flags` Resurrect, bit 2): its resurrect
 /// script runs first (0x4b5a46), and a 0 answer or `critter_flags` [`OCF_UNRESURRECTABLE`]
-/// refuses it (0x4b5a4e → 0x45a540, whose eye candy is not built); otherwise it gets up.
+/// refuses it (0x4b5a4e → 0x45a540, whose eye candy is not built); otherwise it gets up
+/// (0x4b5a71): its fatigue damage 10 (0x4b5b28; the spell's heal gives no fatigue back,
+/// 0x4b5c08), its injuries mended (`Full`, 0x4b5c3d: bits 0x80-0x400), and a reaction to the PC
+/// healer above 0 and below [`RAISED_REACTION`] raised by the difference (0x4b5b3d-0x4b5b9e).
 pub fn resurrect_npcs(mut raising: ResMut<Resurrecting>, mut host: crate::ScriptHost, mut map: ResMut<LoadedMap>, mut world: ResMut<WorldState>, mut outbox: ResMut<Outbox>) {
     for (n, caster) in std::mem::take(&mut raising.0) {
         if !map.is_dead(n.sector, n.index) {
@@ -293,6 +302,17 @@ pub fn resurrect_npcs(mut raising: ResMut<Resurrecting>, mut host: crate::Script
             continue;
         }
         map.revive_npc(n.sector, n.index);
+        map.set_npc_fatigue_damage(n.sector, n.index, RAISED_FATIGUE_DAMAGE);
+        map.cure_npc_injuries(n.sector, n.index);
+        // 0x4c0de0's delta is scaled by the PC (0x4eaab0, not decoded): here as it is.
+        if let Some(r) = host.reaction_of(&world, &map, n, caster).filter(|r| (1..RAISED_REACTION).contains(r))
+            && let Some(saved) = world.0.as_mut().and_then(|w| w.players.get_mut(&caster))
+        {
+            let key = crate::met_key(n.object());
+            let base = map.mobiles.get(&n.sector).and_then(|m| m.get(n.index as usize)).map_or(0, |o| crate::NpcReaction::of(o, &map.prototypes).base);
+            let stored = saved.script_state.reactions.get(&key).copied().unwrap_or(base);
+            saved.script_state.reactions.insert(key, stored + RAISED_REACTION - r);
+        }
         host.toggled_npcs().0.push((n.sector, n.index));
         crate::ground::save_change(&mut world, &map, n.sector);
     }

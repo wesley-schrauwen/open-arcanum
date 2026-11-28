@@ -467,9 +467,14 @@ of `combat_design.md` come after the original's rules work.
      the dead (triggerer the healer, 0x4b5a46), and a 0 answer, or `critter_flags` 0x1000000
      for a Resurrect (0x800000 for a Reanimate), refuses it: 0x45a540's eye candy (sound 0x25d,
      effect 0x283; not built). Here for Resurrect on a dead NPC (PCs carry no scripts; the
-     owner's 15 % stays). Real data: 4 prototypes have 0x1000000, 4 have 0x800000. Not built:
-     the rest of 0x4b5a71's raising (fatigue damage 10, the reaction 0x4c0de0 towards a PC
-     healer below 70, a follower kept with its leader).
+     owner's 15 % stays). Real data: 4 prototypes have 0x1000000, 4 have 0x800000. The raising (0x4b5a71,
+     `feat/resurrect-raising`): fatigue damage 10 (0x4b5b28; the spell's heal gives none back:
+     the `Full` branch takes over +0x54 only when above 0, 0x4b5c08); `Full` mends blinded and
+     crippled (bits 0x80-0x400, 0x4b5c3d); a reaction r to a PC healer with 0 < r < 70 rises by
+     70 − r (0x4b5b3d-0x4b5b9e; 0x4eaab0's scaling by the PC not decoded, so unscaled). Not
+     built: stunned (0x20) cleared, the follower re-joined or dropped (0x45de90 / 0x45de50),
+     the corpse's decay timer and marker removed (0x45ec80, 0x4b5e90), its AI timer reset
+     (0x4ad6e0), effects of cause 7 removed five times (0x4ea2e0; NPCs keep no effects here).
    - Real data: prototypes attach 7 (10), 8 (7), 26 (9), 23 (3), 22 (1).
 13. **Ammunition** (built, `feat/ammunition`).
    - Findings: ammunition is carried items of type 6 (`ammo_quantity` field 0x8e, `ammo_type`
