@@ -1983,8 +1983,30 @@ mod tests {
         // Resurrect on the NPC once dead: 15 % too (owner's call).
         sim.app.world_mut().resource_mut::<LoadedMap>().set_npc_poison(SectorId::new(1, 1), 0, 40);
         sim.app.world_mut().resource_mut::<LoadedMap>().kill_npc(None, SectorId::new(1, 1), 0, 7);
-        sim.receive([(PlayerId(1), crate::PlayerIntent::CastOn { spell: crate::RESURRECT as usize, target: npc_id })]);
-        sim.update();
+        let rest = |sim: &mut SimApp| {
+            let world = sim.app.world_mut();
+            world.query_filtered::<&mut crate::Sheet, With<crate::PlayerControlled>>().iter_mut(world).for_each(|mut s| s.0.fatigue_damage = 0);
+        };
+        let cast = |sim: &mut SimApp| {
+            sim.receive([(PlayerId(1), crate::PlayerIntent::CastOn { spell: crate::RESURRECT as usize, target: npc_id })]);
+            sim.update();
+        };
+        // Its resurrect script (18) answers "skip": refused (0x4b5a4e).
+        let npc = crate::ScriptObject::Mobile { sector: SectorId::new(1, 1), index: 0 };
+        sim.app.world_mut().resource_mut::<LoadedMap>().set_attachment(npc, crate::magick::EVENT_RESURRECT, crate::Attachment::new(0, 0, 740));
+        sim.app.world_mut().resource_mut::<crate::Scripts>().0.get_or_insert_with(Default::default).insert(740, arcanum_formats::script::Script { description: String::new(), flags: 0, lines: vec![crate::script::tests::always(crate::script::tests::block(1, &[]))] });
+        rest(&mut sim);
+        cast(&mut sim);
+        assert!(sim.app.world().resource::<LoadedMap>().is_dead(SectorId::new(1, 1), 0), "its script refused");
+        sim.app.world_mut().resource_mut::<LoadedMap>().set_attachment(npc, crate::magick::EVENT_RESURRECT, crate::Attachment::default());
+        // Unresurrectable (`critter_flags` 0x1000000, 0x4b5a19): refused.
+        assert!(sim.app.world_mut().resource_mut::<LoadedMap>().mobiles.get_mut(&SectorId::new(1, 1)).unwrap()[0].set_int("critter_flags", crate::magick::OCF_UNRESURRECTABLE));
+        rest(&mut sim);
+        cast(&mut sim);
+        assert!(sim.app.world().resource::<LoadedMap>().is_dead(SectorId::new(1, 1), 0), "unresurrectable");
+        assert!(sim.app.world_mut().resource_mut::<LoadedMap>().mobiles.get_mut(&SectorId::new(1, 1)).unwrap()[0].set_int("critter_flags", 0));
+        rest(&mut sim);
+        cast(&mut sim);
         let map = sim.app.world().resource::<LoadedMap>();
         let (left, max) = map.npc_hp(SectorId::new(1, 1), 0).unwrap();
         assert!(!map.is_dead(SectorId::new(1, 1), 0), "raised");

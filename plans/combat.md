@@ -459,9 +459,17 @@ of `combat_design.md` come after the original's rules work.
      triggerer and attachee (0x43cd0e); a 0 answer keeps it (0x43cd18). Will kill on sight 22
      has the one call site, 0x4ae179 in 0x4ae120 (callers 0x412fd0, 0x413130, 0x4ab460, not
      traced).
-   - Finding, not built: 0x4b5a46 runs event 18 on a victim (triggerer the attacker, extra the
-     weapon) in the damage path after 0x45d8d0; a 0 answer, or flags 0xda tests by the
-     critical's 0x400000 (0x4b5a03-0x4b5a25), lead to 0x45a540. Its meaning not traced.
+   - Resurrect 18 (`feat/resurrect-event`, `magick::resurrect_npcs`): 0x4b58c0 is the heal
+     routine (action 0x4b, the Heal skill's case 10, spells at 0x452285). `Dmg_Flags` (names
+     0x5b0d14, values 0x5b0d3c): Full 0x1, Resurrect 0x2, Reanimate 0x400002, Death 0x4,
+     Stunned 0x40, Scars 0x1000, Scaled 0x800000, Weap_Dropped 0x2000, Crippling 0xe00. A heal
+     reaching a dead critter does nothing without bit 2 (0x4b59e8); with it event 18 runs on
+     the dead (triggerer the healer, 0x4b5a46), and a 0 answer, or `critter_flags` 0x1000000
+     for a Resurrect (0x800000 for a Reanimate), refuses it: 0x45a540's eye candy (sound 0x25d,
+     effect 0x283; not built). Here for Resurrect on a dead NPC (PCs carry no scripts; the
+     owner's 15 % stays). Real data: 4 prototypes have 0x1000000, 4 have 0x800000. Not built:
+     the rest of 0x4b5a71's raising (fatigue damage 10, the reaction 0x4c0de0 towards a PC
+     healer below 70, a follower kept with its leader).
    - Real data: prototypes attach 7 (10), 8 (7), 26 (9), 23 (3), 22 (1).
 13. **Ammunition** (built, `feat/ammunition`).
    - Findings: ammunition is carried items of type 6 (`ammo_quantity` field 0x8e, `ammo_type`
