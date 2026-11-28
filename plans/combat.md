@@ -478,8 +478,12 @@ of `combat_design.md` come after the original's rules work.
      `feat/resurrect-raising`): fatigue damage 10 (0x4b5b28; the spell's heal gives none back:
      the `Full` branch takes over +0x54 only when above 0, 0x4b5c08); `Full` mends blinded and
      crippled (bits 0x80-0x400, 0x4b5c3d); a reaction r to a PC healer with 0 < r < 70 rises by
-     70 − r (0x4b5b3d-0x4b5b9e; 0x4eaab0's scaling by the PC not decoded, so unscaled). Not
-     built: stunned (0x20) cleared, the follower re-joined or dropped (0x45de90 / 0x45de50),
+     70 − r (0x4b5b3d-0x4b5b9e; 0x4eaab0's scaling by the PC not decoded, so unscaled). A follower (`feat/raised-followers`): its death took it out of its
+     leader's list (0x45dbd5 → 0x45dfc0(victim, 1): no following, not counted, `npc_flags`
+     0x400 cleared at 0x45e142) but kept the leader (0x45dbef → 0x45de50); raised, it joins
+     again through 0x45de90 with flag 0, so 0x4ad950 with the count (0x4b5ba1), or is dropped
+     with no line (0x45de50(victim, 0, 0)). Not
+     built: stunned (0x20) cleared, 
      the corpse's decay timer and marker removed (0x45ec80, 0x4b5e90), its AI timer reset
      (0x4ad6e0), effects of cause 7 removed five times (0x4ea2e0; NPCs keep no effects here).
    - Real data: prototypes attach 7 (10), 8 (7), 26 (9), 23 (3), 22 (1).

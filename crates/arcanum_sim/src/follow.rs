@@ -15,6 +15,9 @@
 //!   walks to it; 31 tiles or more away it is put on the leader's tile (0x4ad4d0).
 //! - **Moves:** a teleport within the map takes the followers onto the same tile (0x4d3760 /
 //!   0x4d39a0).
+//! - **Death** (0x45da20 at 0x45dbb9-0x45dbf4): a dead follower is out of its leader's list (it
+//!   neither follows nor counts; a forced joining, 0x400, is cleared) but keeps its leader;
+//!   raised, it joins again if [`rejoins`] lets it, else it is dropped.
 
 use arcanum_formats::map::SectorId;
 use arcanum_formats::mes::MesFile;
@@ -284,6 +287,42 @@ pub struct JoinCheck {
     pub ai: AiFollow,
 }
 
+/// Whether NPC `place` of the loaded map, raised from the dead, joins its leader again (0x4b5ba1:
+/// 0x45de90 with flag 0, so 0x4ad950 with the count): bound to it, it does (0x4ad973);
+/// `reaction` is its reaction to the leader. The count leaves it out (dead, it left the list).
+#[allow(clippy::too_many_arguments)]
+pub fn rejoins(save: &crate::WorldSave, map: &crate::LoadedMap, rules: &arcanum_rules::RulesData, ai: AiFollow, place: (SectorId, u32), leader: PlayerId, reaction: i32) -> Result<(), Refusal> {
+    let Some(object) = map.mobiles.get(&place.0).and_then(|m| m.get(place.1 as usize)) else { return Ok(()) };
+    if map.prototypes.int(object, "spell_flags").unwrap_or(0) & crate::combat::OSF_BOUND != 0 {
+        return Ok(());
+    }
+    let Some(saved) = save.players.get(&leader) else { return Ok(()) };
+    let sheet = &saved.blueprint.sheet;
+    let home = map.home_of(place.0, place.1);
+    let followers = save
+        .followers
+        .iter()
+        .filter(|f| f.leader == leader && !f.is(&home) && follower_flags(f, map, &save.other_maps) & (WAITING | FORCED) == 0)
+        .filter(|f| map.place_of(&f.home()).is_none_or(|(s, i)| !map.is_dead(s, i)))
+        .count();
+    let stat = |i: usize| object.ints("critter_stat_base_idx").or_else(|| map.prototypes.of(object)?.ints("critter_stat_base_idx")).and_then(|v| v.get(i).copied()).unwrap_or(0);
+    let check = JoinCheck {
+        pc_persuasion_rank: sheet.training[PERSUASION],
+        pc_charisma: rules.stats(sheet)[7],
+        pc_alignment: rules.alignment(sheet),
+        pc_level: sheet.level,
+        max_followers: rules.derived(sheet).max_followers,
+        followers: followers as i32,
+        forced: map.npc_flags(place.0, place.1).unwrap_or(0) & FORCED != 0,
+        reaction,
+        npc_alignment: stat(0x13),
+        npc_level: stat(0x11),
+        ai,
+        ..Default::default()
+    };
+    can_join(&check, false)
+}
+
 /// Why an NPC will not join (0x4ad950's codes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
@@ -380,8 +419,8 @@ pub fn follow_distance(spread_out: bool) -> u32 {
     if spread_out { SPREAD_OUT_TILES } else { STAY_CLOSE_TILES }
 }
 
-/// Puts [`Following`] on the NPCs that follow a PC on this map now (not waiting), and takes it
-/// off the others.
+/// Puts [`Following`] on the NPCs that follow a PC on this map now (not waiting, not dead), and
+/// takes it off the others.
 pub fn sync_followers(
     mut commands: Commands,
     world: Res<crate::WorldState>,
@@ -394,7 +433,9 @@ pub fn sync_followers(
         let home = map.home_of(source.sector, source.index);
         let record = save.followers.iter().find(|f| f.is(&home));
         let flags = map.npc_flags(source.sector, source.index).unwrap_or(0);
-        let want = record.filter(|_| flags & WAITING == 0).map(|f| Following { leader: f.leader, spread_out: flags & SPREAD_OUT != 0 });
+        // A dead follower is out of its leader's list (0x45dbd5) but keeps its leader.
+        let dead = map.is_dead(source.sector, source.index);
+        let want = record.filter(|_| flags & WAITING == 0 && !dead).map(|f| Following { leader: f.leader, spread_out: flags & SPREAD_OUT != 0 });
         match (want, now) {
             (Some(w), Some(n)) if w == *n => {}
             (Some(w), _) => {

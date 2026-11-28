@@ -1420,6 +1420,61 @@ mod tests {
     }
 
     #[test]
+    fn a_dead_follower_leaves_the_list_and_raised_joins_again_if_it_still_would() {
+        use crate::follow::{Follower, Following};
+        let dir = tempfile::tempdir().unwrap();
+        write_map(dir.path());
+        // The map's NPC 0 at (80, 80) follows the PC, who knows Resurrect.
+        let sector = SectorId::new(1, 1);
+        let mut start = save(&[(1, "A", TileLoc { x: 79, y: 80 })]);
+        start.followers.push(Follower { map: MAP.into(), sector, index: 0, leader: PlayerId(1), away: None, wait_until: None, warn: 0 });
+        let sheet = &mut start.players.get_mut(&PlayerId(1)).unwrap().blueprint.sheet;
+        sheet.base = [20; arcanum_rules::PRIMARY_STATS];
+        sheet.spells[crate::RESURRECT as usize / arcanum_rules::SPELLS_PER_COLLEGE] = 5;
+        let mut sim = SimApp::new(RulesData::default());
+        sim.use_manual_clock();
+        sim.app.insert_resource(vfs(dir.path()));
+        sim.boot(start);
+        for _ in 0..4 {
+            sim.update();
+        }
+        let entity = { let world = sim.app.world_mut(); world.query::<(Entity, &crate::NpcSource)>().iter(world).find(|n| n.1.index == 0).unwrap().0 };
+        assert!(sim.app.world().get::<Following>(entity).is_some(), "follows");
+        let followers = |sim: &SimApp| sim.app.world().resource::<WorldState>().0.as_ref().unwrap().followers.len();
+        let die = |sim: &mut SimApp| {
+            sim.app.world_mut().resource_mut::<LoadedMap>().kill_npc(None, sector, 0, 7);
+            sim.update();
+            sim.update();
+        };
+        let raise = |sim: &mut SimApp| {
+            let world = sim.app.world_mut();
+            world.query_filtered::<&mut crate::Sheet, With<crate::PlayerControlled>>().iter_mut(world).for_each(|mut s| s.0.fatigue_damage = 0);
+            // Spawned again when it fell: its id now.
+            let npc = *world.query::<(&NetId, &crate::NpcSource)>().iter(world).find(|n| n.1.index == 0).unwrap().0;
+            sim.receive([(PlayerId(1), crate::PlayerIntent::CastOn { spell: crate::RESURRECT as usize, target: npc })]);
+            sim.update();
+            sim.update();
+        };
+        die(&mut sim);
+        let entity = { let world = sim.app.world_mut(); world.query::<(Entity, &crate::NpcSource)>().iter(world).find(|n| n.1.index == 0).unwrap().0 };
+        assert!(sim.app.world().get::<Following>(entity).is_none(), "dead: out of the list (0x45dbd5)");
+        assert_eq!(followers(&sim), 1, "its leader kept (0x45dbef)");
+        raise(&mut sim);
+        assert!(!sim.app.world().resource::<LoadedMap>().is_dead(sector, 0), "raised");
+        assert_eq!(followers(&sim), 1, "joins again (0x45de90)");
+        // Its leader can lead none now (Charisma 1): raised, it is dropped (0x45de50).
+        die(&mut sim);
+        {
+            let world = sim.app.world_mut();
+            world.query_filtered::<&mut crate::Sheet, With<crate::PlayerControlled>>().iter_mut(world).for_each(|mut s| s.0.base[7] = 1);
+            world.resource_mut::<WorldState>().0.as_mut().unwrap().players.get_mut(&PlayerId(1)).unwrap().blueprint.sheet.base[7] = 1;
+        }
+        raise(&mut sim);
+        assert!(!sim.app.world().resource::<LoadedMap>().is_dead(sector, 0), "raised");
+        assert_eq!(followers(&sim), 0, "refused: no longer follows");
+    }
+
+    #[test]
     fn a_follower_that_stays_after_its_leaders_hit_warns_unless_the_leader_charms() {
         use crate::follow::Follower;
         for (charisma, warns) in [(10, true), (20, false)] {

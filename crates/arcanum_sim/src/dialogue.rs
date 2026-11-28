@@ -1108,6 +1108,8 @@ pub fn run_conversations(
                     .followers
                     .iter()
                     .filter(|f| f.leader == player && crate::follow::follower_flags(f, &map, &save.other_maps) & (crate::follow::WAITING | crate::follow::FORCED) == 0)
+                    // The dead are out of the list (0x45dbd5).
+                    .filter(|f| map.place_of(&f.home()).is_none_or(|(s, i)| !map.is_dead(s, i)))
                     .count();
                 let object = map.mobiles.get(&sector).and_then(|m| m.get(index as usize));
                 let stat = |i: usize| object.and_then(|o| o.ints("critter_stat_base_idx").or_else(|| map.prototypes.of(o)?.ints("critter_stat_base_idx"))).and_then(|v| v.get(i).copied()).unwrap_or(0);

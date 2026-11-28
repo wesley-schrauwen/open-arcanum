@@ -290,8 +290,11 @@ pub const RAISED_REACTION: i32 = 70;
 /// refuses it (0x4b5a4e → 0x45a540, whose eye candy is not built); otherwise it gets up
 /// (0x4b5a71): its fatigue damage 10 (0x4b5b28; the spell's heal gives no fatigue back,
 /// 0x4b5c08), its injuries mended (`Full`, 0x4b5c3d: bits 0x80-0x400), and a reaction to the PC
-/// healer above 0 and below [`RAISED_REACTION`] raised by the difference (0x4b5b3d-0x4b5b9e).
-pub fn resurrect_npcs(mut raising: ResMut<Resurrecting>, mut host: crate::ScriptHost, mut map: ResMut<LoadedMap>, mut world: ResMut<WorldState>, mut outbox: ResMut<Outbox>) {
+/// healer above 0 and below [`RAISED_REACTION`] raised by the difference (0x4b5b3d-0x4b5b9e); a
+/// follower joins its leader again if the join check passes, else it is dropped
+/// ([`crate::follow::rejoins`]).
+#[allow(clippy::too_many_arguments)]
+pub fn resurrect_npcs(mut raising: ResMut<Resurrecting>, mut host: crate::ScriptHost, mut map: ResMut<LoadedMap>, mut world: ResMut<WorldState>, mut outbox: ResMut<Outbox>, rules: Res<SimRules>, mut generic: ResMut<crate::GenericLines>, vfs: Option<Res<crate::SimVfs>>, clock: Res<crate::GameClock>) {
     for (n, caster) in std::mem::take(&mut raising.0) {
         if !map.is_dead(n.sector, n.index) {
             continue;
@@ -312,6 +315,21 @@ pub fn resurrect_npcs(mut raising: ResMut<Resurrecting>, mut host: crate::Script
             let base = map.mobiles.get(&n.sector).and_then(|m| m.get(n.index as usize)).map_or(0, |o| crate::NpcReaction::of(o, &map.prototypes).base);
             let stored = saved.script_state.reactions.get(&key).copied().unwrap_or(base);
             saved.script_state.reactions.insert(key, stored + RAISED_REACTION - r);
+        }
+        // A follower joins its leader again, or is dropped (0x4b5ba1-0x4b5be3: 0x45de90 with
+        // the join check, else 0x45de50 clears the leader; no line).
+        let home = map.home_of(n.sector, n.index);
+        if let Some(leader) = world.0.as_ref().and_then(|s| s.followers.iter().find(|f| f.is(&home))).map(|f| f.leader) {
+            let reaction = host.reaction_of(&world, &map, n, leader).unwrap_or(0);
+            let guard = vfs.as_ref().and_then(|v| v.0.read().ok());
+            let packet = map.mobiles.get(&n.sector).and_then(|m| m.get(n.index as usize)).and_then(|o| map.prototypes.int(o, "npc_ai_data")).unwrap_or(0);
+            let ai = crate::follow::ai_follow(generic.file(guard.as_deref(), crate::follow::GAME_AI), packet);
+            let refused = world.0.as_ref().is_some_and(|s| crate::follow::rejoins(s, &map, &rules.0, ai, (n.sector, n.index), leader, reaction).is_err());
+            if refused && let Some(save) = world.0.as_mut() {
+                let flags = map.npc_flags(n.sector, n.index).unwrap_or(0);
+                let now = clock.now;
+                crate::follow::set_follower(&mut save.followers, &mut map, (n.sector, n.index), None, flags, None, now);
+            }
         }
         host.toggled_npcs().0.push((n.sector, n.index));
         crate::ground::save_change(&mut world, &map, n.sector);
