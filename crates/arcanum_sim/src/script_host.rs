@@ -1379,6 +1379,11 @@ impl ScriptHost<'_, '_> {
         &mut self.changed_sheets
     }
 
+    /// The NPCs switched or changed this tick, to spawn again ([`crate::world::ToggledNpcs`]).
+    pub fn toggled_npcs(&mut self) -> &mut crate::world::ToggledNpcs {
+        &mut self.toggled_npcs
+    }
+
     /// The PCs' inventories changed this tick, to send on ([`ScriptInventories`]).
     pub fn changed_inventories(&mut self) -> &mut ScriptInventories {
         &mut self.changed_inventories

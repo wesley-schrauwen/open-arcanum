@@ -182,7 +182,7 @@ pub fn cast_on_critters(
     session: Res<Session>,
     rules: Res<SimRules>,
     mut outbox: ResMut<Outbox>,
-    (mut sheets, mut toggled): (ResMut<crate::ScriptSheets>, ResMut<crate::world::ToggledNpcs>),
+    (mut sheets, mut raising): (ResMut<crate::ScriptSheets>, ResMut<Resurrecting>),
     mut casters: Query<(&NetId, &PlayerControlled, &Position, &mut Sheet)>,
     targets: Query<SpellTargetQuery>,
 ) {
@@ -258,15 +258,43 @@ pub fn cast_on_critters(
                         let level = map.npc_poison(n.sector, n.index);
                         map.set_npc_poison(n.sector, n.index, level - amount);
                     }
-                    CritterSpell::Resurrect => {
-                        map.revive_npc(n.sector, n.index);
-                        toggled.0.push((n.sector, n.index));
-                    }
+                    // Raised after its resurrect script answers ([`resurrect_npcs`]).
+                    CritterSpell::Resurrect => raising.0.push((*n, player)),
                 }
                 crate::ground::save_change(&mut world, &map, n.sector);
             }
             _ => {}
         }
+    }
+}
+
+/// Dead NPCs a Resurrect spell reached, and the caster.
+#[derive(Resource, Debug, Default)]
+pub struct Resurrecting(pub Vec<(crate::NpcSource, crate::PlayerId)>);
+
+/// `critter_flags` 0x1000000: no Resurrect raises the critter (0x4b5a19); 0x800000 bars a
+/// Reanimate (`Dmg_Flags` 0x400000, 0x4b5a03; no PC spell has it).
+pub const OCF_UNRESURRECTABLE: i32 = 0x100_0000;
+
+/// Script event 18, resurrect: on the dead critter, the healer the triggerer (0x4b5a46).
+pub const EVENT_RESURRECT: u32 = 18;
+
+/// A Resurrect reaching a dead NPC (0x4b58c0 with `Dmg_Flags` Resurrect, bit 2): its resurrect
+/// script runs first (0x4b5a46), and a 0 answer or `critter_flags` [`OCF_UNRESURRECTABLE`]
+/// refuses it (0x4b5a4e → 0x45a540, whose eye candy is not built); otherwise it gets up.
+pub fn resurrect_npcs(mut raising: ResMut<Resurrecting>, mut host: crate::ScriptHost, mut map: ResMut<LoadedMap>, mut world: ResMut<WorldState>, mut outbox: ResMut<Outbox>) {
+    for (n, caster) in std::mem::take(&mut raising.0) {
+        if !map.is_dead(n.sector, n.index) {
+            continue;
+        }
+        let answer = host.hook_by(&mut world, &mut map, &mut outbox, n.object(), EVENT_RESURRECT, caster, crate::ScriptObject::Pc(caster));
+        let barred = map.mobiles.get(&n.sector).and_then(|m| m.get(n.index as usize)).and_then(|o| map.prototypes.int(o, "critter_flags")).unwrap_or(0) & OCF_UNRESURRECTABLE != 0;
+        if answer == crate::HookResult::SkipDefault || barred {
+            continue;
+        }
+        map.revive_npc(n.sector, n.index);
+        host.toggled_npcs().0.push((n.sector, n.index));
+        crate::ground::save_change(&mut world, &map, n.sector);
     }
 }
 
