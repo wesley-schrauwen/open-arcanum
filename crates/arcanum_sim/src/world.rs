@@ -1709,7 +1709,9 @@ mod tests {
         assert_eq!(answer(&mut sim, 2, 0), Some(crate::repair::REPAIR_FAILED), "no skill: no chance");
         let world = sim.app.world_mut();
         let inv = world.query_filtered::<&crate::Inventory, With<crate::PlayerControlled>>().iter(world).next().unwrap().clone();
-        assert_eq!(inv.items.iter().find(|i| i.location == 0).unwrap().wear.damage, 20, "unchanged");
+        let wear = inv.items.iter().find(|i| i.location == 0).unwrap().wear;
+        assert_eq!(wear.damage, 20, "unchanged");
+        assert_eq!(wear.lost, 4, "the most falls 10 % all the same (0x4c7daa)");
     }
 
     #[test]

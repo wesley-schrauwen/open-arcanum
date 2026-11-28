@@ -11,15 +11,16 @@
 //!   item worn to nothing again is destroyed (0x43f44a → 0x43cca0, its destroy script first).
 //!   Items with no hit points are left alone (builder's call). Nothing else is known to weaken
 //!   a worn item.
-//! - **Repair** ([`repair`]): on a carried item that lost hit points (else `skill_ui.mes` 505
-//!   "not in need of repair"). No roll: with a chance ([`crate::tech_chance`]) of 1 or more it
-//!   restores `max × chance / 100`, at least 1, and the most falls by 10 / 5 / 1 / 0 % by training
-//!   (none, Apprentice, Expert, Master); 500 then; with no chance it fails, 501.
+//! - **Repair** ([`repair`]): on a carried item that lost hit points, or a broken one in a
+//!   Master's hands (else `skill_ui.mes` 505 "not in need of repair"). No roll: with a chance
+//!   ([`crate::tech_chance`]) of 1 or more it restores `max × chance / 100`, at least 1 (500);
+//!   with no chance nothing (501). Below Master the most falls by 10 / 5 / 1 % by training
+//!   (none, Apprentice, Expert) either way; a Master loses nothing, and mends a broken item for 5 %
+//!   of its most (500). Below Master a broken item stays broken.
 //!
-//! Not built: a Master mending broken items ([`ItemWear::broken`], 5 %; 0x4c7d6f clears the bit), the critical failure at Master
-//! (1 %), effect 9 (everything restored), repairing items on the ground or other critters',
-//! critical misses wearing the attacker's weapon (0x4c82e0), items immune to wear (flag
-//! 0x400000).
+//! Not built: the critical failure at Master (1 % of the most when no chance, 0x4c7d9f; 0x4c82e0
+//! not decoded), effect 9 (everything restored), repairing items on the ground or other critters',
+//! critical misses wearing the attacker's weapon (0x4c82e0).
 
 use arcanum_formats::object::Prototypes;
 
@@ -75,19 +76,46 @@ pub fn wear_item(inventory: &mut Inventory, location: i32, prototypes: &Prototyp
     Some(Wear::Broke)
 }
 
-/// Repairs `wear` of an item of `max` hit points with `chance` at `training`: the new wear and
-/// the `skill_ui.mes` line, or the line why not.
+/// Repairs `wear` of an item of `max` hit points with `chance` at `training` (0x4c7160 case
+/// 0xc): the new wear and the `skill_ui.mes` line, or [`NOT_DAMAGED`] when there is nothing to
+/// do (no damage, and not a broken item in a Master's hands, 0x4c7c55-0x4c7c82). It restores
+/// `max × chance / 100`, at least 1, none with no chance (then [`REPAIR_FAILED`],
+/// 0x4c7cf8-0x4c7d1e). Below Master the most falls by [`REPAIR_LOSS`] whether it worked or not
+/// (0x4c7daa); a Master loses nothing, but mends a broken item for 5 % of its most
+/// (0x4c7d52-0x4c7d83), which always counts as repaired.
 pub fn repair(wear: ItemWear, max: i32, chance: i32, training: u8) -> Result<(ItemWear, u32), u32> {
-    if wear.damage < 1 {
+    let master = training >= 3;
+    if wear.damage < 1 && !(wear.broken && master) {
         return Err(NOT_DAMAGED);
     }
-    if chance < 1 {
-        return Err(REPAIR_FAILED);
+    let mut repaired = true;
+    let mut amount = max * chance / 100;
+    if amount < 1 {
+        if chance < 1 {
+            amount = 0;
+            repaired = false;
+        } else {
+            amount = 1;
+        }
     }
-    let amount = (max * chance / 100).max(1);
-    let lost = max * REPAIR_LOSS[usize::from(training.min(3))] / 100;
-    Ok((ItemWear { damage: (wear.damage - amount).max(0), lost: wear.lost + lost, ..wear }, REPAIRED))
+    let mut out = ItemWear { damage: (wear.damage - amount).max(0), ..wear };
+    let loss = if master {
+        if wear.broken {
+            out.broken = false;
+            repaired = true;
+            MASTER_MEND_LOSS
+        } else {
+            0
+        }
+    } else {
+        REPAIR_LOSS[usize::from(training)]
+    };
+    out.lost += max * loss / 100;
+    Ok((out, if repaired { REPAIRED } else { REPAIR_FAILED }))
 }
+
+/// The most hit points a Master's mending of a broken item takes, in percent (0x4c7d62).
+pub const MASTER_MEND_LOSS: i32 = 5;
 
 #[cfg(test)]
 mod tests {
@@ -116,10 +144,16 @@ mod tests {
     fn repairs_restore_by_the_chance_and_cost_by_training() {
         let worn = ItemWear { damage: 30, lost: 0, broken: false };
         assert_eq!(repair(ItemWear::default(), 100, 50, 0), Err(NOT_DAMAGED));
-        assert_eq!(repair(worn, 100, 0, 3), Err(REPAIR_FAILED));
+        assert_eq!(repair(worn, 100, 0, 3), Ok((worn, REPAIR_FAILED)), "no chance: nothing restored");
+        assert_eq!(repair(worn, 100, 0, 0), Ok((ItemWear { damage: 30, lost: 10, broken: false }, REPAIR_FAILED)), "the most falls all the same (0x4c7daa)");
         assert_eq!(repair(worn, 100, 20, 0), Ok((ItemWear { damage: 10, lost: 10, broken: false }, REPAIRED)));
         assert_eq!(repair(worn, 100, 50, 1), Ok((ItemWear { damage: 0, lost: 5, broken: false }, REPAIRED)));
         assert_eq!(repair(worn, 100, 50, 3), Ok((ItemWear { damage: 0, lost: 0, broken: false }, REPAIRED)));
         assert_eq!(repair(ItemWear { damage: 5, lost: 0, broken: false }, 10, 4, 2), Ok((ItemWear { damage: 4, lost: 0, broken: false }, REPAIRED)), "at least 1");
+        let broken = ItemWear { damage: 0, lost: 0, broken: true };
+        assert_eq!(repair(broken, 100, 50, 2), Err(NOT_DAMAGED), "below Master a broken item is not mended (0x4c7c7d)");
+        assert_eq!(repair(broken, 100, 50, 3), Ok((ItemWear { damage: 0, lost: 5, broken: false }, REPAIRED)), "a Master mends it for 5 % (0x4c7d62)");
+        assert_eq!(repair(broken, 100, 0, 3), Ok((ItemWear { damage: 0, lost: 5, broken: false }, REPAIRED)), "even with no chance");
+        assert_eq!(repair(ItemWear { damage: 30, ..broken }, 100, 50, 1), Ok((ItemWear { damage: 0, lost: 5, broken: true }, REPAIRED)), "damage restored, still broken");
     }
 }
