@@ -534,9 +534,10 @@ of `combat_design.md` come after the original's rules work.
      Hammer; the Tesla Rod and Gun) rolls again up to `Y + 1` (0x4b650f-0x4b6531, flag
      0x10000): destroyed (0x4b4f28 adds 0x8000, float 22) with effect 0x37 (0x44c820 →
      0x44c7a0, the 0x5e2fb0 effects: not built). Real data: every weapon's `Y` is 0.
-   - Finding: a weapon of object `flags` 0x400000 is never worn, destroyed or blown up
-     (0x4b4e81 clears 0x4000 / 0x8000 / 0x10000; armour has no such test). No prototype has
-     it; carried items keep no flags of their own here. Not built.
+   - A weapon of object `flags` 0x400000 is never worn, destroyed or blown up (0x4b4e81 clears
+     0x4000 / 0x8000 / 0x10000, so no float either; armour has no such test). Built
+     (`feat/wear-immune`, `combat::OF_WEAR_IMMUNE`) from the prototype's flags: no prototype
+     has it, and carried items keep no flags of their own here.
    - Built: all of that but knocking out and the real-time stun count (a stun ends with the
      fight, builder's call); knocked down plays the fall and the get-up on the client.
      Floats "Stunned", "Knocked down", "Weapon destroyed", "Ammo lost".
