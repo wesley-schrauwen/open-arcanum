@@ -46,6 +46,9 @@ pub enum PlayerIntent {
     /// Pick NPC `npc`'s pocket ([`crate::pickpocket`]) once the PC is within
     /// [`crate::USE_RANGE`] of it: the host opens the window. `seq` is the move sent with it.
     PickPocket { npc: crate::NetId, seq: u32 },
+    /// The PC's cursor rests on an object with an examine script ([`crate::examine`]): the host
+    /// runs it and answers with [`Examined`](crate::LedgerDelta::Examined) carrying `seq`.
+    Examine { target: crate::examine::Examined, seq: u32 },
     /// Start or stop prowling ([`crate::prowl`]).
     Prowl { on: bool },
     /// Attack critter `target` ([`crate::combat`]): starts a fight if none runs; on the PC's

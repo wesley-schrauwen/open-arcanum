@@ -63,7 +63,7 @@ pub fn handle_intents(
     mut items: ResMut<crate::InventoryRequests>,
     mut pickups: ResMut<crate::PickUpRequests>,
     (mut picks, mut disarms): (ResMut<crate::PickLockRequests>, ResMut<crate::DisarmRequests>),
-    mut casts: ResMut<crate::CastRequests>,
+    (mut casts, mut examines): (ResMut<crate::CastRequests>, ResMut<crate::examine::ExamineRequests>),
     (mut rests, mut stops, mut talks): (ResMut<crate::RestRequests>, ResMut<crate::StopRestRequests>, ResMut<crate::TalkRequests>),
     (mut votes, mut fates, mut prowls, mut fights): (ResMut<crate::big_move::VoteRequests>, ResMut<crate::FateRequests>, ResMut<crate::prowl::ProwlRequests>, ResMut<crate::combat::CombatRequests>),
 ) {
@@ -102,6 +102,7 @@ pub fn handle_intents(
             PlayerIntent::StopRest => stops.0.push(player),
             PlayerIntent::Talk { npc, seq } => talks.talk.push((player, npc, seq)),
             PlayerIntent::PickPocket { npc, seq } => talks.pockets.push((player, npc, seq)),
+            PlayerIntent::Examine { target, seq } => examines.0.push((player, target, seq)),
             PlayerIntent::Prowl { on } => prowls.0.push((player, on)),
             PlayerIntent::Attack { target, seq } => fights.attacks.push((player, target, seq)),
             PlayerIntent::EndTurn => fights.end_turn.push(player),

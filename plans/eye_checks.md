@@ -243,3 +243,7 @@ lights after the walk.
 - [ ] A weapon or armour worn to nothing in a fight comes off into the pack painted red (in the
   inventory, the hotkey bar, held on the cursor and dropped on the ground); dragging it onto
   its slot shows "item.mes" 107 and leaves it in the pack.
+
+## Examine scripts
+
+- [ ] Hovering an NPC shows its name a moment later (the host's answer), as before otherwise.

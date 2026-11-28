@@ -28,9 +28,11 @@
 //! Not built: an NPC's reaction or alignment and the prowling state; the to-hit panel in combat;
 //! a weapon's speed, magick power and tech aptitude rows (they need the viewer's stats); the
 //! description override (`item_description_effects`); special icons (item flag 0x40); PCs'
-//! portraits as icons; the examine script
-//! (event 0, run by the original before the text: it runs on the host here, which hover does
-//! not reach).
+//! portraits as icons.
+//!
+//! - **The examine script** (event 0, [`arcanum_sim::examine`]): a hovered object with one on
+//!   the client's map, and every NPC (their own scripts are the host's), asks the host first;
+//!   the name shows on its answer, or not at all when the script skips it.
 
 use std::collections::HashSet;
 
@@ -53,6 +55,20 @@ pub struct ActorKind(pub EntityKind);
 #[derive(Resource, Debug, Default)]
 pub struct KnownNpcs(pub HashSet<NetId>);
 
+/// The host's answers to examinations ([`arcanum_sim::LedgerDelta::Examined`]): number, shown.
+#[derive(Resource, Debug, Default)]
+pub struct ExamineAnswers(pub Vec<(u32, bool)>);
+
+/// The examination waiting for the host: its number and what it would show.
+#[derive(Debug, Default)]
+struct Examining {
+    seq: u32,
+    waiting: Option<(u32, BoxMessage)>,
+}
+
+/// Asking the host about examine scripts ([`hover_world`]).
+type Examine<'w, 's> = (Option<Res<'w, crate::sim_bridge::HostLink>>, ResMut<'w, ExamineAnswers>, Local<'s, Examining>);
+
 /// Description numbers from here on are in `mes/gamedesc.mes` (0x4d4210).
 pub const GAME_DESCRIPTIONS_FROM: i32 = 30000;
 
@@ -61,6 +77,7 @@ pub struct WorldHoverPlugin;
 impl Plugin for WorldHoverPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<KnownNpcs>()
+            .init_resource::<ExamineAnswers>()
             .add_systems(OnExit(AppState::InGame), |mut known: ResMut<KnownNpcs>| known.0.clear())
             .add_systems(Update, hover_world.run_if(in_state(AppState::InGame)));
     }
@@ -349,7 +366,18 @@ fn hover_world(
     health: Option<Res<crate::combat_ui::NpcHealth>>,
     mut texts: Local<Descriptions>,
     mut shown: Local<Option<Entity>>,
+    (link, mut answers, mut examining): Examine,
 ) {
+    // The host's answer to the examination waiting: shown, or nothing (0x57cd9b).
+    for (seq, yes) in std::mem::take(&mut answers.0) {
+        if let Some((waiting, message)) = examining.waiting.take() {
+            if waiting != seq {
+                examining.waiting = Some((waiting, message));
+            } else if yes {
+                messages.show_help(message, time.as_ref().map_or(0.0, |t| t.elapsed_secs_f64()));
+            }
+        }
+    }
     let covered = panel.is_some_and(|p| p.open) || inventory.is_some_and(|p| p.open) || written.is_some_and(|w| w.open.is_some()) || dialogue.is_some_and(|d| d.talking());
     let cursor = windows.iter().find_map(|w| w.cursor_position().map(|c| (c, w.size())));
     let hit = match (cursor, client.as_ref()) {
@@ -365,6 +393,7 @@ fn hover_world(
     let was = *shown;
     *shown = hit;
     let Some(entity) = hit else {
+        examining.waiting = None;
         if was.is_some() {
             messages.clear();
         }
@@ -381,7 +410,12 @@ fn hover_world(
     let Some(client) = client else { return };
     let map = &client.map;
     let intgame = |k: u32| texts.intgame.get(k).map(|t| t.trim().to_string()).unwrap_or_default();
+    // What to ask the host about first: an NPC, or an object with an examine script here.
+    let mut examine = None;
     let shown = if let Ok((.., actor, kind)) = actors.get(entity) {
+        if matches!(kind.map(|k| &k.0), Some(EntityKind::Npc { .. })) {
+            examine = Some(arcanum_sim::examine::Examined::Critter(actor.net_id));
+        }
         match kind.map(|k| &k.0) {
             Some(EntityKind::Pc { .. }) => party.status.get(&actor.net_id).map(|s| (s.name.clone(), None, pc_details(s, local.0.is_some_and(|(id, _)| id == actor.net_id), &intgame))),
             Some(&EntityKind::Npc { prototype }) => map.prototypes.get(prototype).and_then(|p| {
@@ -400,6 +434,12 @@ fn hover_world(
         }
     } else if let Ok((.., object)) = objects.get(entity) {
         let item = |o: &Object| if (5..=14).contains(&o.object_type) { item_name(o, &map.prototypes) } else { map.prototypes.int(o, "description") };
+        let scripted = |o: arcanum_sim::ScriptObject| map.attachment(o, arcanum_sim::examine::EVENT_EXAMINE).number != 0;
+        examine = match (object.id, object.ground) {
+            (Some(id), _) if scripted(arcanum_sim::ScriptObject::Map(id)) => Some(arcanum_sim::examine::Examined::Object(id)),
+            (_, Some(id)) if arcanum_sim::ScriptObject::ground(id).is_some_and(scripted) => Some(arcanum_sim::examine::Examined::Ground(id)),
+            _ => None,
+        };
         let found: Option<Object> = match (object.id, object.ground) {
             (Some(id), _) => map.map_object(id).cloned(),
             (_, Some(id @ GroundItemId::Container { .. })) => map.container_object(id).cloned(),
@@ -414,10 +454,22 @@ fn hover_world(
     } else {
         None
     };
+    examining.waiting = None;
     match shown {
         Some((name, icon, details)) => {
             let message = BoxMessage { icon: icon.map_or(BoxIcon::Arcanum, BoxIcon::Interface), title: Some(name), body: String::new(), extra: None, details: Some(details) };
-            messages.show_help(message, time.map_or(0.0, |t| t.elapsed_secs_f64()));
+            match (examine, link.as_ref()) {
+                (Some(target), Some(link)) => {
+                    examining.seq += 1;
+                    let seq = examining.seq;
+                    let _ = link.0.send_intent(arcanum_sim::PlayerIntent::Examine { target, seq });
+                    examining.waiting = Some((seq, message));
+                    messages.clear();
+                }
+                _ => {
+                    messages.show_help(message, time.map_or(0.0, |t| t.elapsed_secs_f64()));
+                }
+            }
         }
         None => messages.clear(),
     }

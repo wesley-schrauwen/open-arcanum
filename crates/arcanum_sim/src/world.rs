@@ -1475,6 +1475,26 @@ mod tests {
     }
 
     #[test]
+    fn an_examine_script_that_skips_hides_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        write_map(dir.path());
+        let mut sim = booted(dir.path(), save(&[(7, "Virgil", TileLoc { x: 79, y: 80 })]));
+        let sector = SectorId::new(1, 1);
+        let npc = { let world = sim.app.world_mut(); *world.query::<(&NetId, &crate::NpcSource)>().iter(world).find(|n| n.1.index == 0).unwrap().0 };
+        let answer = |sim: &mut SimApp, seq| {
+            sim.receive([(PlayerId(7), crate::PlayerIntent::Examine { target: crate::examine::Examined::Critter(npc), seq })]);
+            sim.update();
+            sim.take_deltas().into_iter().find_map(|(to, d)| match d { LedgerDelta::Examined { seq: s, shown } if to == PlayerId(7) && s == seq => Some(shown), _ => None })
+        };
+        assert_eq!(answer(&mut sim, 1), Some(true), "no script: shown");
+        // Script 750 answers "skip" (0x57cd9b).
+        let object = crate::ScriptObject::Mobile { sector, index: 0 };
+        sim.app.world_mut().resource_mut::<LoadedMap>().set_attachment(object, crate::examine::EVENT_EXAMINE, crate::Attachment::new(0, 0, 750));
+        sim.app.world_mut().resource_mut::<crate::Scripts>().0.get_or_insert_with(Default::default).insert(750, arcanum_formats::script::Script { description: String::new(), flags: 0, lines: vec![crate::script::tests::always(crate::script::tests::block(1, &[]))] });
+        assert_eq!(answer(&mut sim, 2), Some(false), "skipped: nothing shown");
+    }
+
+    #[test]
     fn a_follower_that_stays_after_its_leaders_hit_warns_unless_the_leader_charms() {
         use crate::follow::Follower;
         for (charisma, warns) in [(10, true), (20, false)] {
