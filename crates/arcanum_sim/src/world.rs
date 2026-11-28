@@ -2005,6 +2005,8 @@ mod tests {
         cast(&mut sim);
         assert!(sim.app.world().resource::<LoadedMap>().is_dead(SectorId::new(1, 1), 0), "unresurrectable");
         assert!(sim.app.world_mut().resource_mut::<LoadedMap>().mobiles.get_mut(&SectorId::new(1, 1)).unwrap()[0].set_int("critter_flags", 0));
+        let stored = |sim: &SimApp| sim.app.world().resource::<WorldState>().0.as_ref().unwrap().players[&PlayerId(1)].script_state.reactions.get(&crate::met_key(npc)).copied();
+        sim.app.world_mut().resource_mut::<WorldState>().0.as_mut().unwrap().players.get_mut(&PlayerId(1)).unwrap().script_state.reactions.insert(crate::met_key(npc), -60);
         rest(&mut sim);
         cast(&mut sim);
         let map = sim.app.world().resource::<LoadedMap>();
@@ -2012,6 +2014,9 @@ mod tests {
         assert!(!map.is_dead(SectorId::new(1, 1), 0), "raised");
         assert_eq!(left, crate::resurrected_hp(max));
         assert_eq!(map.npc_poison(SectorId::new(1, 1), 0), 0, "poison cleared");
+        let (tired, most) = map.npc_fatigue(SectorId::new(1, 1), 0).unwrap();
+        assert_eq!(most - tired, crate::magick::RAISED_FATIGUE_DAMAGE, "fatigue damage 10 (0x4b5b28)");
+        assert_eq!(stored(&sim), Some(-30), "its reaction to the healer (40: 100 more with Charisma 20) raised to 70 (0x4b5b9e)");
     }
 
     #[test]

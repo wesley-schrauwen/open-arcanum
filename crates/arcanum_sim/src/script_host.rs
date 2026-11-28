@@ -1379,6 +1379,18 @@ impl ScriptHost<'_, '_> {
         &mut self.changed_sheets
     }
 
+    /// NPC `npc`'s reaction to PC `player`, everything counted (0x4c0cc0); `None` without them.
+    pub fn reaction_of(&mut self, world: &WorldState, map: &LoadedMap, npc: crate::NpcSource, player: PlayerId) -> Option<i32> {
+        let vfs_guard = self.vfs.as_ref().and_then(|v| v.0.read().ok());
+        let vfs = vfs_guard.as_deref();
+        let reputations = &*self.reputations.0.get_or_insert_with(|| {
+            vfs.and_then(|v| v.read(crate::GAME_REP).ok()).and_then(|d| arcanum_formats::mes::MesFile::parse(&d).ok()).map(|m| crate::ReputationEffects::parse(&m)).unwrap_or_default()
+        });
+        let o = map.mobiles.get(&npc.sector)?.get(npc.index as usize)?;
+        let saved = world.0.as_ref()?.players.get(&player)?;
+        Some(crate::reaction_to(&saved.script_state, &crate::met_key(npc.object()), &crate::NpcReaction::of(o, &map.prototypes), &self.rules.0, &saved.blueprint.sheet, reputations))
+    }
+
     /// The NPCs switched or changed this tick, to spawn again ([`crate::world::ToggledNpcs`]).
     pub fn toggled_npcs(&mut self) -> &mut crate::world::ToggledNpcs {
         &mut self.toggled_npcs
