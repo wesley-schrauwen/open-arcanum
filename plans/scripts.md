@@ -497,12 +497,18 @@ Decoded so far, with confidence; the rest are named by the helper they call.
      adds `trap_difficulty` only for trap objects); a Master who fails without a critical
      failure rolls again. Success: the script number becomes 0 (0x4bc220); a critical failure
      springs it on the PC (0x441980 event 1). `mes/skill_ui.mes` 560 / 561.
-   - **Spotting while walking** (built, `feat/walk-spotting`; 0x427110 each step): a walking PC
-     rolls Spot Trap for the unspotted trap objects (type 17; not doors or containers) on the
-     tile its next step enters, once a tile per walk; spotting one marks it, says
-     `mes/trap.mes` 0 and stops the walk before the step. Traps a PC set (`flags` 0x1000000)
-     are known. Followers do not roll yet (the original's do: 0x427110 rolls for any walker,
-     a follower with its own Spot Trap; a leaderless NPC knows every trap a PC did not set).
+   - **Spotting while walking** (built, `feat/walk-spotting`, `feat/followers-spot-traps`;
+     0x427110 each step, any walker): the walker rolls Spot Trap (0x4bbe40) for each trap object
+     (type 17, list mask 0x20000; not doors or containers) on the tile its next step enters
+     that it does not know (0x4bbfe0), in list order; the first spotted stops the walk before
+     the step (0x4272b3 → 1). 0x4bc090 marks it (`flags` 0x2000000) only for a PC (the local
+     one, 0x4bc106; here any) or an NPC with a leader (0x4bc125); a leaderless NPC (which
+     knows every trap a PC did not set, so rolls only for those) stops and marks nothing. The
+     PC is told `mes/trap.mes` 0 (builder's call: the original's UI event 4, 0x460630, not
+     traced); followers say nothing. Once a tile per walk here (the original rolls every step
+     attempt; a failed roll lets the step go on, so the same). NPCs roll with their own skill
+     and Intelligence and the light of the tile ahead. Not built: the local-PC bypass 0x458a80
+     (`0x14` bit 0x100, probably a cheat).
    - **Stepping onto a trap object** (built, `feat/step-on-traps`; 0x4305d0 at 0x430ca8-0x430d0f):
      after a step onto a tile with a trap object (list mask 0x20000, the first only) the walk
      ends there (0x430cf7) and the walker uses it (event 1, 0x430ce3: triggerer the walker,
