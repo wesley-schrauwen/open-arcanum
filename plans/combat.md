@@ -78,7 +78,8 @@ of `combat_design.md` come after the original's rules work.
     knocked down (18), blinded (4, 0x80; head, chart not 1), crippled arm (5, 0x100, both 0x200;
     drops the weapon 19 / shield 20), crippled leg (6, 0x400), scarred (3, PCs, effect 0x32),
     weapon damaged / dropped (8 / 19), armour damaged (7), helmet knocked off (20);
-  - items worn there lose 10 hit points (field 0x1d); at 0 destroyed (23 / 24);
+  - items worn there lose 10 hit points (field 0x1d); at 0 broken, a broken one destroyed
+    (0x43f1c0; floats 23 / 24);
   - a Master's Heal (0x4c7160 case 10) clears 0x80-0x400.
 - **Critical miss** (0x4b6410): half of them have effects, on the attacker: the weapon destroyed
   (22), a spell weapon's spell on the fumbler (9), then 0x4b5f40's effects on it.
@@ -353,8 +354,17 @@ of `combat_design.md` come after the original's rules work.
 9. **Item wear** (built, `feat/repair`; `arcanum_sim::repair`).
    - A critical hit's two item rolls (each up to the base + 10, 0x4b5f40 flags 0x100000 /
      0x4000) wear the armour where it landed (helmet, body, gloves, boots by part, 0x4b54b0) and
-     the target's weapon by 10 hit points (0x4b4390); at 0 the item is destroyed. Items with no
-     hit points are left alone (builder's call). Floats "Armor damaged", "Weapon damaged",
+     the target's weapon by 10 hit points (0x4b4390); at 0, 0x43f1c0 (`feat/items-break`):
+     an item (types 5-14, 0x43f4cd) not broken breaks: art bit 0x400 (0x5045c0 on fields 1 and
+     0x5d; here `ItemWear::broken`), damage reset to 0 (0x43f522), off into the pack if worn
+     (0x464c80) or to the ground without room (0x461a70), and its bust script, event 30, runs
+     (triggerer the attacker, 0x4b4dc0; answer ignored). One already broken is destroyed
+     (0x43f44a → 0x43cca0: its destroy script first; a 0 answer keeps it). A broken item cannot
+     be worn or wielded (0x464d9f: reason 7, `mes/item.mes` 107); NPCs' picks skip it. The
+     destroy waits a tick for its script (builder's call). Items with no hit points are left
+     alone (builder's call). Not built: the broken art on the ground and in the inventory
+     (bit 0x400 of the item's art), 0x43f1c0's branches for other types (doors 2, containers 3,
+     traps 17), the weapon's break sound (0x4f1050). Floats "Armor damaged", "Weapon damaged",
      "Armor broken", "Weapon broken". The wear is kept on the item, carried or dropped.
    - Firearms' chance corrected to 5 × level + 25 (tech table 0x4c6ad8 index 1).
    - Ordinary hits (`feat/armour-wear`): the damage array is normal, poison, electrical, fire,
@@ -444,8 +454,11 @@ of `combat_design.md` come after the original's rules work.
      0x4aaf32). Here: 15 once at the start of each of its turns (builder's call: the
      original's think rate in turn-based play not traced); 16 never (turn-based only), not
      for followers, none without a player behind the target.
-   - Not built: 2 destroy for items destroyed in fights (0x43cd0e; script action 0x44
-     runs it: `feat/destroy-event`), 22 in hostility checks other than noticing.
+   - Destroy 2 for items destroyed in fights (`feat/items-break`): a weapon a critical miss blew
+     up (0x4b4f48) and a broken item worn to nothing (0x43f44a) run it first, the item its
+     triggerer and attachee (0x43cd0e); a 0 answer keeps it (0x43cd18). Will kill on sight 22
+     has the one call site, 0x4ae179 in 0x4ae120 (callers 0x412fd0, 0x413130, 0x4ab460, not
+     traced).
    - Finding, not built: 0x4b5a46 runs event 18 on a victim (triggerer the attacker, extra the
      weapon) in the damage path after 0x45d8d0; a 0 answer, or flags 0xda tests by the
      critical's 0x400000 (0x4b5a03-0x4b5a25), lead to 0x45a540. Its meaning not traced.

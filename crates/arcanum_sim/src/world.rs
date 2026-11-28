@@ -1694,7 +1694,7 @@ mod tests {
         prototypes.insert(sword);
         sim.app.world_mut().resource_mut::<LoadedMap>().prototypes = Arc::new(prototypes);
         let mut start = save(&[(1, "A", TileLoc { x: 71, y: 70 })]);
-        let item = |location, damage| CarriedItem { prototype: 6049, location, quantity: 0, keys: vec![], written: 0, wear: ItemWear { damage, lost: 0 } };
+        let item = |location, damage| CarriedItem { prototype: 6049, location, quantity: 0, keys: vec![], written: 0, wear: ItemWear { damage, lost: 0, broken: false } };
         start.players.get_mut(&PlayerId(1)).unwrap().inventory = Some(Inventory { items: vec![item(0, 20), item(5, 0)], ..Default::default() });
         sim.boot(start);
         sim.update();
@@ -1710,6 +1710,49 @@ mod tests {
         let world = sim.app.world_mut();
         let inv = world.query_filtered::<&crate::Inventory, With<crate::PlayerControlled>>().iter(world).next().unwrap().clone();
         assert_eq!(inv.items.iter().find(|i| i.location == 0).unwrap().wear.damage, 20, "unchanged");
+    }
+
+    #[test]
+    fn a_broken_weapon_cannot_be_wielded_and_its_destroy_script_can_keep_it() {
+        use crate::{CarriedItem, Inventory, InventoryRequest, ItemWear};
+        use crate::script::tests::{always, block};
+        use arcanum_formats::object::{Array, Object, TYPE_WEAPON, Value};
+        use arcanum_formats::test_util::{ObjectBuilder, prototype_id};
+        let dir = tempfile::tempdir().unwrap();
+        write_map(dir.path());
+        let mut sim = SimApp::new(RulesData::default());
+        sim.use_manual_clock();
+        sim.app.insert_resource(vfs(dir.path()));
+        // A sword whose destroy (2) runs script 730.
+        let mut data = Vec::new();
+        data.extend([0u32, 0, 730].iter().flat_map(|v| v.to_le_bytes()));
+        let scripts = Array { elem_size: 12, id: 1, data, bitset: vec![1 << 2, 0] };
+        let mut sword = Object::parse_instance(&ObjectBuilder::new(TYPE_WEAPON).field("item_weight", Value::Int32(1)).field("hp_pts", Value::Int32(40)).field("scripts_idx", Value::Array(Some(scripts))).build()).unwrap();
+        sword.id = prototype_id(6049);
+        let mut prototypes = Prototypes::default();
+        prototypes.insert(sword);
+        sim.app.world_mut().resource_mut::<LoadedMap>().prototypes = Arc::new(prototypes);
+        let mut start = save(&[(1, "A", TileLoc { x: 71, y: 70 })]);
+        let broken = ItemWear { broken: true, ..Default::default() };
+        let item = |location| CarriedItem { prototype: 6049, location, quantity: 0, keys: vec![], written: 0, wear: broken };
+        start.players.get_mut(&PlayerId(1)).unwrap().inventory = Some(Inventory { items: vec![item(0)], ..Default::default() });
+        sim.boot(start);
+        sim.update();
+        sim.update();
+        sim.take_deltas();
+        sim.receive([(PlayerId(1), crate::PlayerIntent::Inventory { seq: 1, request: InventoryRequest::Move { from: 0, to: crate::combat::WEAPON_SLOT } })]);
+        sim.update();
+        let carried = |sim: &SimApp| sim.app.world().resource::<WorldState>().0.as_ref().unwrap().players[&PlayerId(1)].inventory.clone().unwrap().items;
+        assert_eq!(carried(&sim)[0].location, 0, "not wielded (0x464d9f)");
+        assert_eq!(crate::ItemRefusal::Broken.message(), Some(107));
+        // Its destroy script answers "skip": kept (0x43cd18); then "run": gone.
+        for (answer, kept) in [(1, true), (2, false)] {
+            sim.app.world_mut().resource_mut::<crate::Scripts>().0.get_or_insert_with(Default::default).insert(730, arcanum_formats::script::Script { description: String::new(), flags: 0, lines: vec![always(block(answer, &[]))] });
+            let d = crate::combat::ItemDestroy { item: crate::ScriptObject::Carried { holder: PlayerId(1), prototype: 6049 }, prototype: 6049, location: 0, player: Some(PlayerId(1)) };
+            sim.app.world_mut().resource_mut::<crate::combat::CombatEvents>().2.push(d);
+            sim.update();
+            assert_eq!(!carried(&sim).is_empty(), kept, "answer {answer}");
+        }
     }
 
     #[test]
