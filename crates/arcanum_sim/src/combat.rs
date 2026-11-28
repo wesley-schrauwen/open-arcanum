@@ -160,7 +160,8 @@ fn is_ammo_of(prototype: u32, ammo_type: i32, prototypes: &Prototypes) -> bool {
 pub fn choose_weapon(inventory: &crate::Inventory, prototypes: &Prototypes, fighter: &Fighter, distance: Option<u32>) -> Option<i32> {
     let mut best: Option<(i32, i32)> = None;
     let mut reaching: Option<(i32, i32)> = None;
-    for item in &inventory.items {
+    // A broken weapon cannot be wielded (0x464d9f).
+    for item in inventory.items.iter().filter(|i| !i.wear.broken) {
         let Some(o) = prototypes.get(item.prototype).filter(|o| o.object_type == arcanum_formats::object::TYPE_WEAPON) else { continue };
         let weapon = weapon_of(o, prototypes);
         if weapon.uses_ammo() && ammo_count(inventory, weapon.ammo_type, prototypes) < weapon.ammo_per_shot {
@@ -258,7 +259,7 @@ pub fn wear_best(inv: &crate::Inventory, wearer: crate::Wearer, info: &impl Fn(u
                 }
             }
         }
-        let pick = inv.items.iter().filter(|i| !(crate::FIRST_SLOT..=crate::LAST_SLOT).contains(&i.location) && inv.in_grid(i.location)).filter(|i| fits(&inv, i.prototype)).fold(None, |b: Option<(i32, i32)>, i| {
+        let pick = inv.items.iter().filter(|i| !(crate::FIRST_SLOT..=crate::LAST_SLOT).contains(&i.location) && inv.in_grid(i.location)).filter(|i| !i.wear.broken && fits(&inv, i.prototype)).fold(None, |b: Option<(i32, i32)>, i| {
             let w = worth(i.prototype);
             if w > b.map_or(best, |b| b.0) { Some((w, i.location)) } else { b }
         });
@@ -1020,12 +1021,29 @@ pub struct CombatStarts(pub Vec<(NetId, NetId)>);
 
 /// Script events the fight raises (0x4aabe0, 0x45da20, 0x4b3770 …): the attachee, the event, the
 /// player whose PC is involved, the triggerer. An item a PC carries runs its prototype's script.
-/// Their answers are ignored, as the original's. Second, the weapons' events.
+/// Their answers are ignored, as the original's. Second, the carried items' events (weapons'
+/// hits and misses, items' busts); third, carried items to destroy.
 #[derive(Resource, Debug, Default)]
-pub struct CombatEvents(pub Vec<(crate::ScriptObject, u32, PlayerId, crate::ScriptObject)>, pub Vec<WeaponEvent>);
+pub struct CombatEvents(pub Vec<(crate::ScriptObject, u32, PlayerId, crate::ScriptObject)>, pub Vec<WeaponEvent>, pub Vec<ItemDestroy>);
 
-/// A weapon's script event (0x4b3770, 0x4b2f60): the weapon the attachee, the attacker the
-/// triggerer, the victim the extra; for `player`.
+/// A carried item the fight destroys (0x43cca0: a weapon a critical miss blew up, 0x4b4f48; a
+/// broken item worn to nothing, 0x43f44a): its destroy script (2) runs first, the item its
+/// triggerer and attachee (0x43cd0e), and a 0 answer keeps it (0x43cd18). Without a player to
+/// run it for, it is destroyed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItemDestroy {
+    pub item: crate::ScriptObject,
+    pub prototype: u32,
+    pub location: i32,
+    pub player: Option<PlayerId>,
+}
+
+/// Item `event` 30: a carried item broke (0x43f1c0 → 0x441980; the attacker the triggerer).
+pub const EVENT_BUST: u32 = 30;
+
+/// A carried item's script event: a weapon's hit or miss (0x4b3770, 0x4b2f60: the weapon the
+/// attachee, the attacker the triggerer, the victim the extra), or an item's bust (no extra);
+/// for `player`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WeaponEvent {
     pub item: crate::ScriptObject,
@@ -1033,7 +1051,7 @@ pub struct WeaponEvent {
     pub event: u32,
     pub player: PlayerId,
     pub attacker: crate::ScriptObject,
-    pub victim: crate::ScriptObject,
+    pub victim: Option<crate::ScriptObject>,
 }
 
 /// Script events of attacks: hit and miss (on the weapon, the attacker the triggerer; 0x4b37a3 /
@@ -1088,12 +1106,45 @@ pub const EVENT_END_COMBAT: u32 = 16;
 
 /// Runs the fight's script events with the host.
 /// Runs the fight's script events with the host; asks the held hits' and would-be foes' scripts.
+/// Takes a destroyed item from its holder's inventory, if it is still where it was.
+fn destroy_carried(world: &mut crate::WorldState, map: &mut crate::LoadedMap, inventories: &mut crate::script_host::ScriptInventories, d: ItemDestroy) {
+    let gone = |inv: &mut crate::Inventory| match inv.items.iter().position(|i| i.location == d.location && i.prototype == d.prototype) {
+        Some(i) => {
+            inv.items.remove(i);
+            true
+        }
+        None => false,
+    };
+    match d.item {
+        crate::ScriptObject::Carried { holder, .. } => {
+            if world.0.as_mut().and_then(|w| w.players.get_mut(&holder)).and_then(|s| s.inventory.as_mut()).is_some_and(gone) {
+                inventories.0.insert(holder);
+            }
+        }
+        crate::ScriptObject::NpcCarried { sector, index, .. } => {
+            if let Some(mut inv) = map.npc_inventory(sector, index)
+                && gone(&mut inv)
+            {
+                map.set_npc_inventory(sector, index, inv);
+                crate::ground::save_change(world, map, sector);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn run_combat_events(mut events: ResMut<CombatEvents>, mut checks: ResMut<ScriptChecks>, mut starts: ResMut<CombatStarts>, mut host: crate::ScriptHost, mut world: ResMut<crate::WorldState>, mut map: ResMut<crate::LoadedMap>, mut outbox: ResMut<crate::Outbox>) {
     for (object, event, player, triggerer) in std::mem::take(&mut events.0) {
         host.hook_by(&mut world, &mut map, &mut outbox, object, event, player, triggerer);
     }
     for e in std::mem::take(&mut events.1) {
-        host.carried_hook(&mut world, &mut map, &mut outbox, e.item, e.prototype, e.event, e.player, e.attacker, Some(e.victim));
+        host.carried_hook(&mut world, &mut map, &mut outbox, e.item, e.prototype, e.event, e.player, e.attacker, e.victim);
+    }
+    for d in std::mem::take(&mut events.2) {
+        let kept = d.player.is_some_and(|player| host.carried_hook(&mut world, &mut map, &mut outbox, d.item, d.prototype, crate::EVENT_DESTROY, player, d.item, None) == crate::HookResult::SkipDefault);
+        if !kept {
+            destroy_carried(&mut world, &mut map, host.changed_inventories(), d);
+        }
     }
     for hit in std::mem::take(&mut checks.hits) {
         let allowed = match hit.player {
@@ -1564,8 +1615,13 @@ impl CombatWorld<'_, '_> {
 
     /// Puts `c`'s wielded weapon on tile `at`; whether it had one.
     fn drop_weapon_at(&mut self, c: &Seen, at: TileLoc) -> bool {
+        self.drop_item_at(c, WEAPON_SLOT, at)
+    }
+
+    /// Puts `c`'s item at `location` on tile `at`; whether it had one.
+    fn drop_item_at(&mut self, c: &Seen, location: i32, at: TileLoc) -> bool {
         let take = |inv: &mut crate::Inventory| {
-            let at = inv.items.iter().position(|i| i.location == WEAPON_SLOT)?;
+            let at = inv.items.iter().position(|i| i.location == location)?;
             Some(inv.items.remove(at))
         };
         let item = match (c.player, c.npc) {
@@ -1598,7 +1654,6 @@ impl CombatWorld<'_, '_> {
         true
     }
 
-    /// Destroys the attacker's wielded weapon (0x43cca0).
     /// The prototype of the item in `critter`'s weapon slot.
     fn wielded(&self, critter: &Seen) -> Option<u32> {
         let found = |inv: &crate::Inventory| inv.items.iter().find(|i| i.location == WEAPON_SLOT).map(|i| i.prototype);
@@ -1609,24 +1664,34 @@ impl CombatWorld<'_, '_> {
         }
     }
 
-    fn destroy_weapon(&mut self, attacker: &Seen) {
-        let gone = |inv: &mut crate::Inventory| inv.items.retain(|i| i.location != WEAPON_SLOT);
-        match (attacker.player, attacker.npc) {
-            (Some(p), _) => {
-                if let Some(inv) = self.world.0.as_mut().and_then(|w| w.players.get_mut(&p)).and_then(|s| s.inventory.as_mut()) {
-                    gone(inv);
-                    self.inventories.0.insert(p);
-                }
-            }
-            (None, Some(n)) => {
-                if let Some(mut inv) = self.map.npc_inventory(n.sector, n.index) {
-                    gone(&mut inv);
-                    self.map.set_npc_inventory(n.sector, n.index, inv);
-                    crate::ground::save_change(&mut self.world, &self.map, n.sector);
-                }
-            }
-            _ => {}
+    /// A carried item of `holder` at `location`: its script object and prototype.
+    fn carried_at(&self, holder: &Seen, location: i32) -> Option<(crate::ScriptObject, u32)> {
+        let inv = match (holder.player, holder.npc) {
+            (Some(p), _) => self.world.0.as_ref().and_then(|w| w.players.get(&p)).and_then(|s| s.inventory.clone()),
+            (None, Some(n)) => self.map.npc_inventory(n.sector, n.index),
+            _ => None,
+        }?;
+        let prototype = inv.items.iter().find(|i| i.location == location)?.prototype;
+        let item = match (holder.player, holder.npc) {
+            (Some(p), _) => crate::ScriptObject::Carried { holder: p, prototype },
+            (None, Some(n)) => crate::ScriptObject::NpcCarried { sector: n.sector, index: n.index, prototype },
+            _ => return None,
+        };
+        Some((item, prototype))
+    }
+
+    /// Destroys `holder`'s item at `location` (0x43cca0): after its destroy script
+    /// ([`ItemDestroy`]).
+    fn destroy_item(&mut self, holder: &Seen, location: i32, player: Option<PlayerId>) {
+        if let Some((item, prototype)) = self.carried_at(holder, location) {
+            self.events.2.push(ItemDestroy { item, prototype, location, player });
         }
+    }
+
+    /// Destroys the attacker's wielded weapon (0x4b4f48 → 0x43cca0).
+    fn destroy_weapon(&mut self, attacker: &Seen) {
+        let player = attacker.player.or(attacker.leader);
+        self.destroy_item(attacker, WEAPON_SLOT, player);
     }
 
     /// Takes a shot's rounds from the attacker's inventory (builder's call: the original's
@@ -1652,20 +1717,43 @@ impl CombatWorld<'_, '_> {
     }
 
     /// Wears the victim's items a hit struck (0x4b4390): the armour where it landed and
-    /// its weapon, if it has them; what happened ([`AttackOutcome::items`]).
-    fn wear_items(&mut self, victim: &Seen, outcome: &AttackOutcome) -> u8 {
+    /// its weapon, if it has them; what happened ([`AttackOutcome::items`]). An item worn to
+    /// nothing breaks (0x43f4cd): it comes off into the pack (0x464c80), or falls to the ground
+    /// without room (0x461a70), and its bust script runs, `by` the triggerer; a broken one is
+    /// destroyed ([`crate::repair::Wear`]).
+    fn wear_items(&mut self, by: &Seen, victim: &Seen, outcome: &AttackOutcome) -> u8 {
+        use crate::repair::Wear;
         let mut inventory = match (victim.player, victim.npc) {
             (Some(p), _) => self.world.0.as_ref().and_then(|w| w.players.get(&p)).and_then(|s| s.inventory.clone()),
             (None, Some(n)) => self.map.npc_inventory(n.sector, n.index),
             _ => None,
         };
         let Some(inv) = inventory.as_mut() else { return 0 };
+        let player = by.player.or(victim.player).or(by.leader).or(victim.leader);
+        let info = self.item_facts();
         let mut done = 0;
+        let (mut busted, mut dropped, mut gone) = (Vec::new(), Vec::new(), Vec::new());
         for (bit, slot, broke) in [(ARMOUR_DAMAGED, BodyPart::slot_of(outcome.part), ARMOUR_BROKEN), (WEAPON_DAMAGED, WEAPON_SLOT, WEAPON_BROKEN)] {
-            if outcome.items & bit != 0
-                && let Some(broken) = crate::repair::wear_item(inv, slot, &self.map.prototypes)
-            {
-                done |= if broken { broke } else { bit };
+            if outcome.items & bit == 0 {
+                continue;
+            }
+            match crate::repair::wear_item(inv, slot, &self.map.prototypes) {
+                None => {}
+                Some(Wear::Worn) => done |= bit,
+                Some(Wear::Broke) => {
+                    done |= broke;
+                    let Some(prototype) = inv.items.iter().find(|i| i.location == slot).map(|i| i.prototype) else { continue };
+                    busted.push(prototype);
+                    let cells = info(prototype).map_or((1, 1), |i| i.cells);
+                    match crate::Inventory::free_spot(&inv.occupied(&info), cells).and_then(|spot| inv.move_item(slot, spot, crate::Wearer { race: 0, gender: 0 }, &info).ok()) {
+                        Some(off) => *inv = off,
+                        None => dropped.push(slot),
+                    }
+                }
+                Some(Wear::Gone) => {
+                    done |= broke;
+                    gone.push(slot);
+                }
             }
         }
         if done == 0 {
@@ -1685,7 +1773,33 @@ impl CombatWorld<'_, '_> {
             }
             _ => {}
         }
+        for slot in dropped {
+            self.drop_item_at(victim, slot, victim.at);
+        }
+        for slot in gone {
+            self.destroy_item(victim, slot, player);
+        }
+        if let Some(player) = player {
+            for prototype in busted {
+                let item = match (victim.player, victim.npc) {
+                    (Some(p), _) => crate::ScriptObject::Carried { holder: p, prototype },
+                    (None, Some(n)) => crate::ScriptObject::NpcCarried { sector: n.sector, index: n.index, prototype },
+                    _ => continue,
+                };
+                self.events.1.push(WeaponEvent { item, prototype, event: EVENT_BUST, player, attacker: object_of(by), victim: None });
+            }
+        }
         done
+    }
+
+    /// The facts of items by prototype ([`crate::item_info`]).
+    fn item_facts(&self) -> impl Fn(u32) -> Option<crate::ItemInfo> + use<> {
+        let (prototypes, art) = (self.map.prototypes.clone(), self.map.art.clone());
+        let vfs = self.vfs.as_ref().map(|v| v.0.clone());
+        move |id| {
+            let guard = vfs.as_ref().and_then(|v| v.read().ok());
+            crate::item_info(&prototypes, |a| crate::world::art_size(guard.as_deref(), art.as_deref(), a))(id)
+        }
     }
 
     /// A critter's hit points left in percent (0x4ab400).
@@ -3221,14 +3335,14 @@ fn strike(commands: &mut Commands, w: &mut CombatWorld, all: &[Seen], attacker: 
     // A critical miss's wear on the attacker's own items, then its weapon knocked away.
     if outcome.fumble_items != 0 {
         let dropped = outcome.fumble_items & WEAPON_DROPPED;
-        outcome.fumble_items = w.wear_items(attacker, &AttackOutcome { items: outcome.fumble_items, ..outcome });
+        outcome.fumble_items = w.wear_items(attacker, attacker, &AttackOutcome { items: outcome.fumble_items, ..outcome });
         if dropped != 0 && outcome.fumble_items & WEAPON_BROKEN == 0 && w.drop_weapon(attacker) {
             outcome.fumble_items |= WEAPON_DROPPED;
         }
     }
     if outcome.items != 0 {
         let dropped = outcome.items & WEAPON_DROPPED;
-        outcome.items = w.wear_items(victim, &outcome);
+        outcome.items = w.wear_items(attacker, victim, &outcome);
         // A weapon broken by the same hit is gone (0x4b4f21 runs first).
         if dropped != 0 && outcome.items & WEAPON_BROKEN == 0 && w.drop_weapon(victim) {
             outcome.items |= WEAPON_DROPPED;
@@ -3364,7 +3478,7 @@ fn attack_events(w: &mut CombatWorld, attacker: &Seen, victim: &Seen, outcome: &
     };
     if let (Some(item), Some(prototype)) = (item, weapon) {
         let (first, critical) = if outcome.hit || outcome.dodged { (EVENT_HIT, outcome.critical) } else { (EVENT_MISS, outcome.fumbled) };
-        let event = |event| WeaponEvent { item, prototype, event, player, attacker: object_of(attacker), victim: object_of(victim) };
+        let event = |event| WeaponEvent { item, prototype, event, player, attacker: object_of(attacker), victim: Some(object_of(victim)) };
         w.events.1.push(event(first));
         let weapon_object = w.map.prototypes.get(prototype).is_some_and(|p| p.object_type == arcanum_formats::object::TYPE_WEAPON);
         if critical && (!ranged || weapon_object) {

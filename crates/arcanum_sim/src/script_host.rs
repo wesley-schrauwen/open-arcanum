@@ -1379,6 +1379,11 @@ impl ScriptHost<'_, '_> {
         &mut self.changed_sheets
     }
 
+    /// The PCs' inventories changed this tick, to send on ([`ScriptInventories`]).
+    pub fn changed_inventories(&mut self) -> &mut ScriptInventories {
+        &mut self.changed_inventories
+    }
+
     pub fn item_hook(&mut self, world: &mut WorldState, map: &mut LoadedMap, outbox: &mut crate::Outbox, player: PlayerId, prototype: u32, event: u32) -> HookResult {
         self.carried_hook(world, map, outbox, ScriptObject::Carried { holder: player, prototype }, prototype, event, player, ScriptObject::Pc(player), None)
     }

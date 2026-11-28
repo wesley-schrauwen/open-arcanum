@@ -97,12 +97,20 @@ pub struct ItemWear {
     pub damage: i32,
     /// Most hit points lost to repairs.
     pub lost: i32,
+    /// Broken (the item art's bit 0x400, 0x5045a0): worn to nothing once (0x43f4cd); it cannot
+    /// be worn or wielded (0x464d9f), and worn to nothing again it is destroyed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub broken: bool,
 }
 
 impl ItemWear {
     pub fn is_new(&self) -> bool {
         *self == Self::default()
     }
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 fn is_zero(v: &i32) -> bool {
@@ -276,6 +284,8 @@ pub enum ItemRefusal {
     WrongGender,
     /// `item_flags` NO_DROP (111).
     NoDrop,
+    /// A broken item cannot be worn or wielded (107, 0x464d9f).
+    Broken,
 }
 
 impl ItemRefusal {
@@ -290,6 +300,7 @@ impl ItemRefusal {
             Self::WrongSize => Some(108),
             Self::WrongGender => Some(110),
             Self::NoDrop => Some(111),
+            Self::Broken => Some(107),
         }
     }
 }
@@ -403,6 +414,9 @@ impl Inventory {
                 } else if (FIRST_SLOT..=LAST_SLOT).contains(&to) && self.rows == PC_ROWS {
                     if self.items.iter().any(|i| i.location == to) {
                         return Err(ItemRefusal::Silent);
+                    }
+                    if item.wear.broken {
+                        return Err(ItemRefusal::Broken);
                     }
                     self.fit_test(&facts, to, wearer, &info)?;
                 } else {
@@ -701,6 +715,9 @@ impl Inventory {
         if !(FIRST_SLOT..=LAST_SLOT).contains(&to) {
             return Err(ItemRefusal::Silent);
         }
+        if self.items[index].wear.broken {
+            return Err(ItemRefusal::Broken);
+        }
         // The fit test sees the inventory without what the swap takes off.
         let other = self.items.iter().position(|i| i.location == to);
         let without = Inventory { items: self.items.iter().filter(|i| i.location != to).cloned().collect(), rows: self.rows, spells: Default::default() };
@@ -763,7 +780,7 @@ impl Inventory {
             if self.items.iter().any(|i| i.location == location) {
                 continue;
             }
-            if let Some(item) = self.items.iter_mut().find(|i| in_grid(i.location) && info(i.prototype).and_then(|x| x.slot()).is_some_and(|s| s as i32 == location)) {
+            if let Some(item) = self.items.iter_mut().find(|i| in_grid(i.location) && !i.wear.broken && info(i.prototype).and_then(|x| x.slot()).is_some_and(|s| s as i32 == location)) {
                 item.location = location;
             }
         }
