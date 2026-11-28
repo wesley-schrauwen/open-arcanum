@@ -1020,9 +1020,21 @@ pub struct CombatStarts(pub Vec<(NetId, NetId)>);
 
 /// Script events the fight raises (0x4aabe0, 0x45da20, 0x4b3770 …): the attachee, the event, the
 /// player whose PC is involved, the triggerer. An item a PC carries runs its prototype's script.
-/// Their answers are ignored, as the original's.
+/// Their answers are ignored, as the original's. Second, the weapons' events.
 #[derive(Resource, Debug, Default)]
-pub struct CombatEvents(pub Vec<(crate::ScriptObject, u32, PlayerId, crate::ScriptObject)>);
+pub struct CombatEvents(pub Vec<(crate::ScriptObject, u32, PlayerId, crate::ScriptObject)>, pub Vec<WeaponEvent>);
+
+/// A weapon's script event (0x4b3770, 0x4b2f60): the weapon the attachee, the attacker the
+/// triggerer, the victim the extra; for `player`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeaponEvent {
+    pub item: crate::ScriptObject,
+    pub prototype: u32,
+    pub event: u32,
+    pub player: PlayerId,
+    pub attacker: crate::ScriptObject,
+    pub victim: crate::ScriptObject,
+}
 
 /// Script events of attacks: hit and miss (on the weapon, the attacker the triggerer; 0x4b37a3 /
 /// 0x4b3972), critical hit and miss after them (0x4b37cd / 0x4b399c), taking damage (on the
@@ -1078,14 +1090,10 @@ pub const EVENT_END_COMBAT: u32 = 16;
 /// Runs the fight's script events with the host; asks the held hits' and would-be foes' scripts.
 pub fn run_combat_events(mut events: ResMut<CombatEvents>, mut checks: ResMut<ScriptChecks>, mut starts: ResMut<CombatStarts>, mut host: crate::ScriptHost, mut world: ResMut<crate::WorldState>, mut map: ResMut<crate::LoadedMap>, mut outbox: ResMut<crate::Outbox>) {
     for (object, event, player, triggerer) in std::mem::take(&mut events.0) {
-        match object {
-            crate::ScriptObject::Carried { holder, prototype } => {
-                host.item_hook(&mut world, &mut map, &mut outbox, holder, prototype, event);
-            }
-            _ => {
-                host.hook_by(&mut world, &mut map, &mut outbox, object, event, player, triggerer);
-            }
-        }
+        host.hook_by(&mut world, &mut map, &mut outbox, object, event, player, triggerer);
+    }
+    for e in std::mem::take(&mut events.1) {
+        host.carried_hook(&mut world, &mut map, &mut outbox, e.item, e.prototype, e.event, e.player, e.attacker, Some(e.victim));
     }
     for hit in std::mem::take(&mut checks.hits) {
         let allowed = match hit.player {
@@ -1591,6 +1599,16 @@ impl CombatWorld<'_, '_> {
     }
 
     /// Destroys the attacker's wielded weapon (0x43cca0).
+    /// The prototype of the item in `critter`'s weapon slot.
+    fn wielded(&self, critter: &Seen) -> Option<u32> {
+        let found = |inv: &crate::Inventory| inv.items.iter().find(|i| i.location == WEAPON_SLOT).map(|i| i.prototype);
+        match (critter.player, critter.npc) {
+            (Some(_), _) => critter.inventory.as_ref().and_then(found),
+            (None, Some(n)) => self.map.npc_inventory(n.sector, n.index).as_ref().and_then(found),
+            _ => None,
+        }
+    }
+
     fn destroy_weapon(&mut self, attacker: &Seen) {
         let gone = |inv: &mut crate::Inventory| inv.items.retain(|i| i.location != WEAPON_SLOT);
         match (attacker.player, attacker.npc) {
@@ -3183,6 +3201,8 @@ pub const HELPLESS_UNAWARE: i32 = 30;
 fn strike(commands: &mut Commands, w: &mut CombatWorld, all: &[Seen], attacker: &Seen, victim: &Seen, fighter: &Fighter, aim: Aim) -> AttackOutcome {
     let defender = Fighter { helpless: helpless(w, attacker, victim), ..w.fighter(victim) };
     let ranged = fighter.weapon.as_ref().is_some_and(|wp| wp.range > 1);
+    // The weapon whose scripts the blow runs, before a critical miss can take it.
+    let weapon = fighter.weapon.as_ref().and_then(|_| w.wielded(attacker));
     let situation = if ranged { w.shot_difficulty(all, attacker, victim, fighter.skill()) } else { 0 } + w.dark_difficulty(attacker, victim, fighter.skill());
     let stab = stab_of(fighter, attacker, victim, !w.notices_quietly(victim, attacker));
     // A waiting fate use (0x4b3697): the PC attacker's own, else a PC target's against an NPC.
@@ -3216,7 +3236,7 @@ fn strike(commands: &mut Commands, w: &mut CombatWorld, all: &[Seen], attacker: 
     }
     outcome.killed = outcome.hit && outcome.hp > 0 && victim.npc.is_some_and(|n| w.map.npc_hp(n.sector, n.index).is_some_and(|(left, _)| left - outcome.hp < 1));
     crate::ground::broadcast(&w.session, &mut w.outbox, LedgerDelta::Attacked { attacker: attacker.net_id, target: victim.net_id, outcome });
-    attack_events(w, attacker, victim, &outcome);
+    attack_events(w, attacker, victim, &outcome, weapon, ranged);
     // The remark needs the target meant (0x4b6bfc); 0x4a9650's part only blows not thrown.
     if aim != Aim::Stray {
         praise_critical(w, all, attacker, victim, &outcome);
@@ -3331,20 +3351,24 @@ fn object_of(c: &Seen) -> crate::ScriptObject {
     }
 }
 
-/// The script events of an attack (answers ignored): the PC's weapon's hit or miss, and critical
-/// hit or miss; the attacker's critter-hits on a hit. NPCs' weapons run nothing (builder's call:
-/// their carried items are not script objects yet).
-fn attack_events(w: &mut CombatWorld, attacker: &Seen, victim: &Seen, outcome: &AttackOutcome) {
+/// The script events of an attack (answers ignored): the weapon's hit or miss, then its
+/// critical hit or miss (a missile's only for a weapon object, type 5: 0x4b2fb3 / 0x4b3142),
+/// PCs' and NPCs' alike (0x4b3770 and 0x4b2f60 test no type); the attacker's critter-hits on a
+/// hit. `weapon`: the wielded item's prototype as the blow began (an unarmed blow runs none).
+fn attack_events(w: &mut CombatWorld, attacker: &Seen, victim: &Seen, outcome: &AttackOutcome, weapon: Option<u32>, ranged: bool) {
     let Some(player) = attacker.player.or(victim.player).or(attacker.leader).or(victim.leader) else { return };
-    if let (Some(holder), Some(inv)) = (attacker.player, &attacker.inventory)
-        && let Some(weapon) = inv.items.iter().find(|i| i.location == WEAPON_SLOT)
-    {
-        let item = crate::ScriptObject::Carried { holder, prototype: weapon.prototype };
+    let item = match (attacker.player, attacker.npc, weapon) {
+        (Some(holder), _, Some(prototype)) => Some(crate::ScriptObject::Carried { holder, prototype }),
+        (None, Some(n), Some(prototype)) => Some(crate::ScriptObject::NpcCarried { sector: n.sector, index: n.index, prototype }),
+        _ => None,
+    };
+    if let (Some(item), Some(prototype)) = (item, weapon) {
         let (first, critical) = if outcome.hit || outcome.dodged { (EVENT_HIT, outcome.critical) } else { (EVENT_MISS, outcome.fumbled) };
-        w.events.0.push((item, first, holder, crate::ScriptObject::Pc(holder)));
-        if critical {
-            let second = if first == EVENT_HIT { EVENT_CRITICAL_HIT } else { EVENT_CRITICAL_MISS };
-            w.events.0.push((item, second, holder, crate::ScriptObject::Pc(holder)));
+        let event = |event| WeaponEvent { item, prototype, event, player, attacker: object_of(attacker), victim: object_of(victim) };
+        w.events.1.push(event(first));
+        let weapon_object = w.map.prototypes.get(prototype).is_some_and(|p| p.object_type == arcanum_formats::object::TYPE_WEAPON);
+        if critical && (!ranged || weapon_object) {
+            w.events.1.push(event(if first == EVENT_HIT { EVENT_CRITICAL_HIT } else { EVENT_CRITICAL_MISS }));
         }
     }
     if outcome.hit && attacker.npc.is_some() {

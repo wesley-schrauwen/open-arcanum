@@ -1839,6 +1839,62 @@ mod tests {
     }
 
     #[test]
+    fn an_npcs_weapon_runs_its_hit_and_miss_scripts() {
+        use crate::script::tests::{always, block, n, op};
+        use arcanum_formats::object::{Array, Object, ObjectId, TYPE_WEAPON, Value};
+        use arcanum_formats::test_util::{ObjectBuilder, prototype_id};
+        let dir = tempfile::tempdir().unwrap();
+        write_map(dir.path());
+        let folder = dir.path().join("maps").join(MAP);
+        let at = |x: u32, y: u32| Value::Int64(Some(i64::from(x) | (i64::from(y) << 32)));
+        let mut foe = ObjectBuilder::new(TYPE_NPC).field("current_aid", Value::Int32(0x2800_2000)).field("location", at(72, 70)).field("hp_pts", Value::Int32(500));
+        foe.id = ObjectId { kind: ObjectId::KIND_GUID, payload: [3; 16] };
+        std::fs::write(folder.join("G_0F.mob"), foe.build()).unwrap();
+        let mut sim = SimApp::new(RulesData::default());
+        sim.use_manual_clock();
+        sim.app.insert_resource(vfs(dir.path()));
+        // A club whose hit (7) and miss (8) run script 720.
+        let mut data = Vec::new();
+        for v in [0u32, 0, 720, 0, 0, 720] {
+            data.extend(v.to_le_bytes());
+        }
+        let scripts = Array { elem_size: 12, id: 1, data, bitset: vec![1 << 7 | 1 << 8, 0] };
+        let mut club = Object::parse_instance(&ObjectBuilder::new(TYPE_WEAPON).field("item_weight", Value::Int32(1)).field("weapon_ammo_type", Value::Int32(crate::combat::NO_AMMO)).field("weapon_speed_factor", Value::Int32(15)).field("scripts_idx", Value::Array(Some(scripts))).build()).unwrap();
+        club.id = prototype_id(8001);
+        sim.boot(save(&[(1, "A", TileLoc { x: 71, y: 70 })]));
+        sim.update();
+        sim.update();
+        let sector = SectorId::new(1, 1);
+        let (npc, index) = {
+            let world = sim.app.world_mut();
+            let map = world.resource::<LoadedMap>();
+            let index = map.mobiles[&sector].iter().position(|o| o.object_type == TYPE_NPC).unwrap() as u32;
+            (*world.query::<(&NetId, &crate::NpcSource)>().iter(world).find(|(_, s)| s.index == index).unwrap().0, index)
+        };
+        {
+            let mut map = sim.app.world_mut().resource_mut::<LoadedMap>();
+            let mut prototypes = (*map.prototypes).clone();
+            prototypes.insert(club);
+            map.prototypes = Arc::new(prototypes);
+            let mut carried = map.npc_inventory(sector, index).unwrap_or_default();
+            carried.items.push(crate::CarriedItem { prototype: 8001, location: crate::combat::WEAPON_SLOT, quantity: 0, keys: vec![], written: 0, wear: Default::default() });
+            map.set_npc_inventory(sector, index, carried);
+        }
+        // Script 720 counts in global variable 1.
+        let count = always(block(0xb, &[op(1, 1), op(1, 1), n(1)]));
+        sim.app.world_mut().resource_mut::<crate::Scripts>().0.get_or_insert_with(Default::default).insert(720, arcanum_formats::script::Script { description: String::new(), flags: 0, lines: vec![count] });
+        let var = |sim: &SimApp| sim.app.world().resource::<WorldState>().0.as_ref().unwrap().scripts.var(1);
+        let mut npc_blows = 0;
+        for seq in 0..40 {
+            sim.receive([(PlayerId(1), crate::PlayerIntent::Attack { target: npc, seq })]);
+            sim.update();
+            npc_blows += sim.take_deltas().iter().filter(|(_, d)| matches!(d, LedgerDelta::Attacked { attacker, .. } if *attacker == npc)).count();
+        }
+        assert!(npc_blows > 0, "the NPC fights back");
+        assert!(var(&sim) >= npc_blows as i32, "each blow runs hit or miss (0x4b3770: no PC test)");
+    }
+
+    #[test]
     fn a_pc_raises_another_and_heals_an_npc_by_spell() {
         use arcanum_formats::object::{ObjectId, Value};
         use arcanum_formats::test_util::ObjectBuilder;

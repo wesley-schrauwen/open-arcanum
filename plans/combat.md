@@ -420,12 +420,14 @@ of `combat_design.md` come after the original's rules work.
    - Not built: a dead PC's items and followers.
 12. **Script events** (built, `feat/combat-events`; hook 0x441980 args: triggerer, attachee,
     extra, event, checked at 0x45da20).
-   - Hit 7 / miss 8 on the PC's weapon (triggerer the attacker; 0x4b37a3 / 0x4b3972), then
+   - Hit 7 / miss 8 on the attacker's weapon, a PC's or an NPC's (`feat/npc-weapon-events`:
+     0x4b3770 and 0x4b2f60 test no critter type; an NPC's item is `ScriptObject::NpcCarried`,
+     its prototype's scripts; triggerer the attacker; 0x4b37a3 / 0x4b3972), then
      critical hit 34 / miss 35 (0x4b37cd / 0x4b399c); critter hits 26 on the NPC attacker
      (triggerer the victim; 0x4b37fc). The weapon item is the attachee, the victim the extra;
      unarmed blows run none (0x4b3778-0x4b378b). The original runs 7 before the damage
      (0x4b37a3) and ignores every answer. Ranged blows run them at 0x4b2f90 / 0x4b3119 (34 / 35
-     there only for weapon type 5) and a projectile's on arrival, on `projectile_parent_weapon`
+     there only for weapon type 5: built) and a projectile's on arrival, on `projectile_parent_weapon`
      (0x4b2b7f / 0x4b2f06, from 0x4b2870). Leader killing 20 on each follower of the killing PC
      (triggerer the dead, 0x45db95). The original ignores their answers; here they run after
      the attack rather than before its damage.
@@ -442,7 +444,7 @@ of `combat_design.md` come after the original's rules work.
      0x4aaf32). Here: 15 once at the start of each of its turns (builder's call: the
      original's think rate in turn-based play not traced); 16 never (turn-based only), not
      for followers, none without a player behind the target.
-   - Not built: NPCs' weapons' scripts (their items are no script objects), 2 destroy for items destroyed in fights (0x43cd0e; script action 0x44
+   - Not built: 2 destroy for items destroyed in fights (0x43cd0e; script action 0x44
      runs it: `feat/destroy-event`), 22 in hostility checks other than noticing.
    - Finding, not built: 0x4b5a46 runs event 18 on a victim (triggerer the attacker, extra the
      weapon) in the damage path after 0x45d8d0; a 0 answer, or flags 0xda tests by the

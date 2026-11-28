@@ -40,6 +40,8 @@ pub enum ScriptObject {
     Mobile { sector: arcanum_formats::map::SectorId, index: u32 },
     /// An item a PC carries, by its prototype (its scripts are the prototype's).
     Carried { holder: PlayerId, prototype: u32 },
+    /// An item an NPC carries, by its prototype (its scripts are the prototype's).
+    NpcCarried { sector: arcanum_formats::map::SectorId, index: u32, prototype: u32 },
 }
 
 impl ScriptObject {
@@ -77,7 +79,7 @@ impl LoadedMap {
     /// The attachment `object` has for `event` now: changed by a script, else from the data.
     pub fn attachment(&self, object: ScriptObject, event: u32) -> Attachment {
         let (sector, index, data) = match object {
-            ScriptObject::Pc(_) | ScriptObject::Carried { .. } => return Attachment::default(),
+            ScriptObject::Pc(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => return Attachment::default(),
             ScriptObject::Map(id) => (id.sector, id.index, self.map_object(id)),
             ScriptObject::Mobile { sector, index } => (sector, index, self.mobiles.get(&sector).and_then(|m| m.get(index as usize))),
         };
@@ -94,7 +96,7 @@ impl LoadedMap {
     /// Keeps a changed attachment in the sector's changes.
     pub fn set_attachment(&mut self, object: ScriptObject, event: u32, attachment: Attachment) {
         let (sector, index) = match object {
-            ScriptObject::Pc(_) | ScriptObject::Carried { .. } => return,
+            ScriptObject::Pc(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => return,
             ScriptObject::Map(id) => (id.sector, id.index),
             ScriptObject::Mobile { sector, index } => (sector, index),
         };
@@ -287,7 +289,7 @@ impl ScriptContext for HostWorld<'_> {
     fn object_int(&mut self, object: ScriptObject, field: &str) -> Option<i32> {
         let data = match object {
             ScriptObject::Pc(_) => None,
-            ScriptObject::Carried { prototype, .. } => return self.map.prototypes.get(prototype)?.int(field),
+            ScriptObject::Carried { prototype, .. } | ScriptObject::NpcCarried { prototype, .. } => return self.map.prototypes.get(prototype)?.int(field),
             ScriptObject::Map(id) => self.map.map_object(id),
             ScriptObject::Mobile { sector, index } => self.map.mobiles.get(&sector).and_then(|m| m.get(index as usize)),
         }?;
@@ -355,7 +357,7 @@ impl ScriptContext for HostWorld<'_> {
     fn object_type(&mut self, object: ScriptObject) -> i32 {
         match object {
             ScriptObject::Pc(_) => arcanum_formats::object::TYPE_PC as i32,
-            ScriptObject::Carried { prototype, .. } => self.map.prototypes.get(prototype).map_or(0, |p| p.object_type as i32),
+            ScriptObject::Carried { prototype, .. } | ScriptObject::NpcCarried { prototype, .. } => self.map.prototypes.get(prototype).map_or(0, |p| p.object_type as i32),
             ScriptObject::Map(id) => self.map.map_object(id).map_or(0, |o| o.object_type as i32),
             ScriptObject::Mobile { sector, index } => self.map.mobiles.get(&sector).and_then(|m| m.get(index as usize)).map_or(0, |o| o.object_type as i32),
         }
@@ -383,7 +385,7 @@ impl ScriptContext for HostWorld<'_> {
             ScriptObject::Mobile { sector, .. } => {
                 self.sectors.insert(sector);
             }
-            ScriptObject::Pc(_) | ScriptObject::Carried { .. } => {}
+            ScriptObject::Pc(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => {}
         }
     }
 
@@ -512,7 +514,7 @@ impl ScriptContext for HostWorld<'_> {
                 let raw = o.ints(field).or_else(|| self.map.prototypes.of(o)?.ints(field)).and_then(|v| v.get(i).copied()).unwrap_or(0);
                 ((raw & 0x3f) * arcanum_rules::LEVELS_PER_POINT).min(arcanum_rules::MAX_SKILL_LEVEL)
             }
-            ScriptObject::Map(_) | ScriptObject::Carried { .. } => 0,
+            ScriptObject::Map(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => 0,
         }
     }
 
@@ -576,7 +578,7 @@ impl ScriptContext for HostWorld<'_> {
         let (sector, index, mobile) = match object {
             ScriptObject::Map(id) => (id.sector, id.index, false),
             ScriptObject::Mobile { sector, index } => (sector, index, true),
-            ScriptObject::Pc(_) | ScriptObject::Carried { .. } => return,
+            ScriptObject::Pc(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => return,
         };
         let Some(flags) = self.map.object_flags(sector, index, mobile) else { return };
         let flags = flags ^ mask;
@@ -897,7 +899,7 @@ impl ScriptContext for HostWorld<'_> {
             _ => return,
         };
         let tool = match tool {
-            Some(ScriptObject::Carried { prototype, .. }) => Some(prototype),
+            Some(ScriptObject::Carried { prototype, .. } | ScriptObject::NpcCarried { prototype, .. }) => Some(prototype),
             _ => None,
         };
         self.orders.picks.push((player, lock, tool));
@@ -937,7 +939,7 @@ impl ScriptContext for HostWorld<'_> {
                 let stats = o.ints("critter_stat_base_idx").or_else(|| self.map.prototypes.of(o)?.ints("critter_stat_base_idx"));
                 usize::try_from(stat).ok().and_then(|i| stats?.get(i).copied()).unwrap_or(0)
             }
-            ScriptObject::Map(_) | ScriptObject::Carried { .. } => 0,
+            ScriptObject::Map(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => 0,
         }
     }
 
@@ -1048,7 +1050,7 @@ fn map_place(object: ScriptObject) -> Option<(arcanum_formats::map::SectorId, u3
     match object {
         ScriptObject::Map(id) => Some((id.sector, id.index, false)),
         ScriptObject::Mobile { sector, index } => Some((sector, index, true)),
-        ScriptObject::Pc(_) | ScriptObject::Carried { .. } => None,
+        ScriptObject::Pc(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => None,
     }
 }
 
@@ -1103,7 +1105,7 @@ impl HostWorld<'_> {
         match object {
             ScriptObject::Map(id) => crate::object_location(self.map.map_object(id)?),
             ScriptObject::Mobile { sector, index } => crate::object_location(self.map.mobiles.get(&sector)?.get(index as usize)?),
-            ScriptObject::Pc(_) | ScriptObject::Carried { .. } => None,
+            ScriptObject::Pc(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => None,
         }
     }
 
@@ -1119,7 +1121,7 @@ impl HostWorld<'_> {
                     _ => None,
                 }
             }
-            ScriptObject::Map(_) | ScriptObject::Carried { .. } => None,
+            ScriptObject::Map(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => None,
         }
     }
 
@@ -1141,7 +1143,7 @@ impl HostWorld<'_> {
                 }
                 self.sectors.insert(sector);
             }
-            ScriptObject::Map(_) | ScriptObject::Carried { .. } => {}
+            ScriptObject::Map(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => {}
         }
     }
 
@@ -1362,7 +1364,7 @@ impl ScriptHost<'_, '_> {
             let sector = match object {
                 ScriptObject::Map(id) => id.sector,
                 ScriptObject::Mobile { sector, .. } => sector,
-                ScriptObject::Pc(_) | ScriptObject::Carried { .. } => return result,
+                ScriptObject::Pc(_) | ScriptObject::Carried { .. } | ScriptObject::NpcCarried { .. } => return result,
             };
             crate::ground::save_change(world, map, sector);
         }
@@ -1378,12 +1380,18 @@ impl ScriptHost<'_, '_> {
     }
 
     pub fn item_hook(&mut self, world: &mut WorldState, map: &mut LoadedMap, outbox: &mut crate::Outbox, player: PlayerId, prototype: u32, event: u32) -> HookResult {
+        self.carried_hook(world, map, outbox, ScriptObject::Carried { holder: player, prototype }, prototype, event, player, ScriptObject::Pc(player), None)
+    }
+
+    /// Runs the script of a carried `item` (a PC's or an NPC's) of `prototype` for `event`, with
+    /// `triggerer` and `other`, `player` acting.
+    #[allow(clippy::too_many_arguments)]
+    pub fn carried_hook(&mut self, world: &mut WorldState, map: &mut LoadedMap, outbox: &mut crate::Outbox, item: ScriptObject, prototype: u32, event: u32, player: PlayerId, triggerer: ScriptObject, other: Option<ScriptObject>) -> HookResult {
         let Some(mut attachment) = map.prototypes.get(prototype).and_then(|p| attachments(p, &map.prototypes).get(&event).copied()) else { return HookResult::RunDefault };
         if attachment.number == 0 {
             return HookResult::RunDefault;
         }
-        let item = ScriptObject::Carried { holder: player, prototype };
-        let invocation = Invocation { attachee: item, triggerer: ScriptObject::Pc(player), other: None, event, start_line: 0 };
+        let invocation = Invocation { attachee: item, triggerer, other, event, start_line: 0 };
         self.execute(world, map, outbox, &mut attachment, invocation, player).unwrap_or(HookResult::RunDefault)
     }
 
