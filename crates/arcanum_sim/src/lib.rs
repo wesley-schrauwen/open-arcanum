@@ -18,6 +18,7 @@ pub mod combat;
 pub mod container;
 pub mod creation;
 pub mod delta;
+pub mod examine;
 pub mod dialogue;
 pub mod doors;
 pub mod follow;

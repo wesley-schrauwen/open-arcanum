@@ -538,8 +538,15 @@ Decoded so far, with confidence; the rest are named by the helper they call.
      Containers: before the use script (0x572370). "Skip the default" denies the opening (the
      original's result 4; its message is not shown). Picking, keys and the Unlocking spell do
      not run it.
-   - **Not built:** examine (0, 0x57cd60: a PC only, before the description; "skip" shows
-     none) — there is no examine yet. Destroy (2) runs for
+   - **Examine (0)** (built, `feat/examine-event`, `arcanum_sim::examine`): 0x553a70's hover →
+     0x57ccf0 → 0x57cd60, the player's PC only (0x40d9f0): event 0 with the PC the triggerer and
+     the object the attachee (0x57cd93) before the name; "skip" shows none (0x57cd9b). The hover
+     is the client's: an object with an examine script on the client's map, and every NPC
+     (their own attachments are the host's; builder's call), asks the host
+     (`PlayerIntent::Examine`) and shows the name on its answer (`LedgerDelta::Examined`).
+     Not built: the inventory's hover (0x573cea) and the other 12 callers of 0x57ccf0, dropped
+     items. Real data: prototypes attach scripts 1145, 1341, 1435, 1436.
+   - Destroy (2) runs for
      action 0x44 (`feat/destroy-event`); the original's other 56 callers of 0x43cca0 (a
      weapon destroyed in a fight, an item worn to nothing, 0x43f1c0) do not run it here.
 4n. **The written window** (built, `feat/written-windows`; client `written_window`).

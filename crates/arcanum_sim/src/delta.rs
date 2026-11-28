@@ -146,6 +146,9 @@ pub enum LedgerDelta {
     DialogueEnded,
     /// A line a script shows in the player's message box ([`crate::script`], action 0x18).
     ScriptMessage { text: String },
+    /// The answer to examination `seq` ([`crate::examine`]): whether its name shows (the
+    /// examine script did not skip it).
+    Examined { seq: u32, shown: bool },
     /// NPCs this player's PC has met, newly in sight ([`crate::dialogue::send_known_npcs`]):
     /// their real names show on hover.
     KnownNpcs { npcs: Vec<NetId> },
