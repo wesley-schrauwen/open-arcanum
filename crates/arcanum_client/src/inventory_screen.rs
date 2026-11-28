@@ -534,6 +534,20 @@ pub fn centred(inside: Rect, size: UVec2, grid: bool) -> Vec2 {
     inside.min + Vec2::new(gap(inside.width(), size.x) as f32, gap(inside.height(), size.y) as f32)
 }
 
+/// Red paint over a broken item's art (owner's call; the original swaps in a broken art,
+/// bit 0x400 of the item's art id).
+pub(crate) const BROKEN_TINT: Color = Color::srgb(1.0, 0.25, 0.25);
+
+/// The colour an item's art is drawn in: [`BROKEN_TINT`] when broken, else plain.
+pub(crate) fn item_tint(wear: &arcanum_sim::ItemWear) -> Color {
+    if wear.broken { BROKEN_TINT } else { Color::WHITE }
+}
+
+/// An item's art drawn in its [`item_tint`].
+pub(crate) fn item_image(image: Handle<Image>, wear: &arcanum_sim::ItemWear) -> ImageNode {
+    ImageNode { color: item_tint(wear), ..ImageNode::new(image) }
+}
+
 /// The art an item shows at its location: worn weapons and armour their paperdoll art.
 pub(crate) fn item_art(prototypes: &Prototypes, item: &CarriedItem) -> Option<ArtId> {
     let p = prototypes.get(item.prototype)?;
@@ -943,7 +957,7 @@ fn follow_cursor(
     // The original's cursor shows the inventory art (field 93) wherever the item was.
     let grid_item = CarriedItem { location: 0, ..item };
     let Some((image, size)) = item_art(prototypes, &grid_item).and_then(|id| art_frame(index, &mut cache, &assets, &frames, id)) else { return };
-    let art = commands.spawn((HeldArt, bevy::picking::Pickable::IGNORE, ImageNode::new(image), at(rect(corner, Vec2::new(size.x as f32, size.y as f32))))).id();
+    let art = commands.spawn((HeldArt, bevy::picking::Pickable::IGNORE, item_image(image, &grid_item.wear), at(rect(corner, Vec2::new(size.x as f32, size.y as f32))))).id();
     commands.entity(root).add_child(art);
 }
 
@@ -1001,7 +1015,7 @@ fn show_items(
             };
             let boxed = pile_box(item.location, arcanum_sim::cells_for(size.x, size.y), scroll.0, side.origin);
             let corner = centred(boxed, size, true) - side.origin;
-            inside.push(commands.spawn((DrawnItem(item.clone()), bevy::picking::Pickable::IGNORE, ImageNode::new(image), at(rect(corner, Vec2::new(size.x as f32, size.y as f32))))).id());
+            inside.push(commands.spawn((DrawnItem(item.clone()), bevy::picking::Pickable::IGNORE, item_image(image, &item.wear), at(rect(corner, Vec2::new(size.x as f32, size.y as f32))))).id());
         }
         commands.entity(clip).add_children(&inside);
         content.push(clip);
@@ -1016,7 +1030,7 @@ fn show_items(
         let cells = arcanum_sim::cells_for(size.x, size.y);
         let Some(inside) = placement(item, cells) else { continue };
         let corner = centred(inside, size, in_grid(item.location));
-        content.push(commands.spawn((InventoryContent, DrawnItem(item.clone()), bevy::picking::Pickable::IGNORE, ImageNode::new(image), at(band(corner.x, corner.y, size.x as f32, size.y as f32)))).id());
+        content.push(commands.spawn((InventoryContent, DrawnItem(item.clone()), bevy::picking::Pickable::IGNORE, item_image(image, &item.wear), at(band(corner.x, corner.y, size.x as f32, size.y as f32)))).id());
     }
     // The texts.
     let rules = data.as_ref().map(|d| d.rules.clone()).unwrap_or_default();
@@ -1060,6 +1074,15 @@ fn text_cell(commands: &mut Commands, fonts: &ArcanumFonts, which: InventoryText
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn broken_items_are_painted_red() {
+        let broken = arcanum_sim::ItemWear { broken: true, ..Default::default() };
+        assert_eq!(item_tint(&broken), BROKEN_TINT);
+        assert_eq!(item_tint(&arcanum_sim::ItemWear { damage: 30, ..Default::default() }), Color::WHITE, "worn, not broken");
+        assert_eq!(item_image(Handle::default(), &broken).color, BROKEN_TINT);
+    }
+
     use super::*;
 
     fn sword(n: u32) -> Option<ItemInfo> {

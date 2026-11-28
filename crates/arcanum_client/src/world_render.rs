@@ -600,7 +600,7 @@ fn spawn_dropped(commands: &mut Commands, client: &mut ClientMap, assets: &Asset
     let flat = flags & FLAT_FLAG != 0;
     commands.spawn((
         MapObject { location: item.location, object_type, id: None, ground: Some(id), art: aid, frames: handle.clone(), flat, tile_order },
-        Sprite::default(),
+        Sprite { color: crate::inventory_screen::item_tint(&item.wear), ..default() },
         // Dropped items sit on the tile centre (offsets cleared, 0x4415c0).
         Transform::from_translation(tile_to_world(item.location, origin).extend(object_depth(item.location, depth_origin, flat, tile_order))),
         Visibility::Hidden,
