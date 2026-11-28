@@ -1917,6 +1917,62 @@ mod tests {
         assert_eq!(map.npc_hp(sector, index).map(|(left, max)| left == max), Some(true), "no damage taken");
     }
 
+    /// A kill-on-sight NPC at (72, 70), PC 1 at (`far_x`, 70) and PC 2 at (73, 70), PC 2 out of
+    /// fatigue when `down`, the NPC fighting to subdue when `subdues`: whom it fights.
+    fn whom_a_foe_picks(down: bool, subdues: bool, far_x: u32) -> (NetId, NetId, Option<NetId>) {
+        use arcanum_formats::object::{Array, ObjectId, Value};
+        use arcanum_formats::test_util::ObjectBuilder;
+        let dir = tempfile::tempdir().unwrap();
+        write_map(dir.path());
+        let folder = dir.path().join("maps").join(MAP);
+        std::fs::create_dir_all(dir.path().join("rules")).unwrap();
+        std::fs::write(dir.path().join("rules").join("ai_params.mes"), "{0}{0 1000 1000 0 6 1000 1001 1000 2 -20 -1000 2001 100 50 20 1 1}").unwrap();
+        let at = |x: u32, y: u32| Value::Int64(Some(i64::from(x) | (i64::from(y) << 32)));
+        let mut stats = [0i32; 6];
+        stats[5] = 10;
+        let stats = Value::Array(Some(Array { elem_size: 4, id: 1, data: stats.iter().flat_map(|x| x.to_le_bytes()).collect(), bitset: vec![0x3f, 0] }));
+        let flags = if subdues { crate::combat::OCF_NON_LETHAL } else { 0 };
+        let mut foe = ObjectBuilder::new(TYPE_NPC).field("current_aid", Value::Int32(0x2800_2000)).field("location", at(72, 70)).field("npc_flags", Value::Int32(crate::combat::ONF_KOS)).field("critter_flags", Value::Int32(flags)).field("critter_stat_base_idx", stats).field("hp_pts", Value::Int32(500));
+        foe.id = ObjectId { kind: ObjectId::KIND_GUID, payload: [3; 16] };
+        std::fs::write(folder.join("G_0F.mob"), foe.build()).unwrap();
+        let mut sim = SimApp::new(RulesData::default());
+        sim.use_manual_clock();
+        sim.app.insert_resource(vfs(dir.path()));
+        let mut start = save(&[(1, "Far", TileLoc { x: far_x, y: 70 }), (2, "Near", TileLoc { x: 73, y: 70 })]);
+        if down {
+            start.players.get_mut(&PlayerId(2)).unwrap().blueprint.sheet.fatigue_damage = 1000;
+        }
+        sim.boot(start);
+        sim.update();
+        sim.update();
+        let id = |sim: &mut SimApp, p: u64| { let world = sim.app.world_mut(); world.query::<(&NetId, &crate::PlayerControlled)>().iter(world).find(|c| c.1.0 == PlayerId(p)).map(|c| *c.0) };
+        let (far, near) = (id(&mut sim, 1).expect("PC 1"), id(&mut sim, 2).expect("PC 2"));
+        let mut target = None;
+        for _ in 0..(crate::combat::NOTICE_TICKS * 3) {
+            sim.update();
+            let world = sim.app.world_mut();
+            if let Some(f) = world.query_filtered::<&crate::combat::Fighting, With<crate::NpcSource>>().iter(world).find(|_| true) {
+                target = Some(f.target);
+                break;
+            }
+        }
+        (far, near, target)
+    }
+
+    #[test]
+    fn a_foe_takes_the_nearest_pc_and_one_that_subdues_leaves_the_down() {
+        let (_, near, target) = whom_a_foe_picks(false, false, 75);
+        assert_eq!(target, Some(near), "the nearest first (0x4ab460)");
+        let (far, _, target) = whom_a_foe_picks(true, false, 75);
+        assert_eq!(target, Some(far), "a down PC sorts 1000 farther");
+        // The other PC out of reach: a down PC is taken, unless the NPC fights to subdue.
+        let (_, near, target) = whom_a_foe_picks(true, false, 110);
+        assert_eq!(target, Some(near));
+        let (_, _, target) = whom_a_foe_picks(true, true, 110);
+        assert_eq!(target, None, "fighting to subdue: not one down (0x4aba3c)");
+    }
+
+
     #[test]
     fn a_fighting_npc_runs_its_start_combat_script_each_turn() {
         use crate::script::tests::{always, block, n, op};

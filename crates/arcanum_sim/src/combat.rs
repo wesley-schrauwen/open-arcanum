@@ -2536,10 +2536,18 @@ fn facing_of(facing: Option<&crate::Facing>, look: Option<&crate::Appearance>) -
 type FoeQuery<'a> = (&'a NetId, &'a crate::Position, &'a crate::NpcSource, Option<&'a crate::Facing>, Option<&'a crate::Appearance>);
 /// NPCs not fighting, following or surrendered.
 type AtPeace = (Without<Fighting>, Without<crate::follow::Following>, Without<Surrendered>);
-type QuarryQuery<'a> = (&'a NetId, &'a crate::Position, &'a crate::PlayerControlled, &'a crate::Sheet, (Has<crate::Prowling>, Option<&'a crate::Inventory>));
+/// `critter_flags` 0x10000000: fights to subdue (`OCF_NON_LETHAL_COMBAT`): it takes no down
+/// critter as a foe (0x4aba3c).
+pub const OCF_NON_LETHAL: i32 = 0x1000_0000;
+/// How far a foe may be for the hostility check (0x4ab990 → 0x441ae0 at 0x4abb38: 20).
+pub const NOTICE_GATE_TILES: u32 = 20;
+/// What a down candidate adds to its distance in 0x4ab460's sort.
+pub const DOWN_SORT_PENALTY: u32 = 1000;
+
+type QuarryQuery<'a> = (&'a NetId, &'a crate::Position, &'a crate::PlayerControlled, &'a crate::Sheet, (Has<crate::Prowling>, Option<&'a crate::Inventory>, Has<crate::Unconscious>));
 
 /// NPCs that are not fighting look for PCs they are hostile to within reach (0x4aa0d0 →
-/// 0x4ab460 → 0x4ae120); one found starts a fight ([`CombatStarts`]). Followers, the dead and
+/// 0x4ab460 → 0x4ae120), the nearest first; one found starts a fight ([`CombatStarts`]). Followers, the dead and
 /// those talking keep still. Sight lines and facing are not counted.
 #[allow(clippy::too_many_arguments)]
 pub fn notice_foes(
@@ -2577,7 +2585,16 @@ pub fn notice_foes(
         let reaction = crate::NpcReaction::of(o, &map.prototypes);
         let key = crate::met_key(source.object());
         let alignment = npc_stat(o, &map.prototypes, 0x13);
-        for (&pc, pc_at, player, sheet, (prowling, inventory)) in &pcs {
+        // The nearest first, a down one 1000 farther (0x4ab460's sort, by 0x441ae0); the gate
+        // (0x4ab990): not the dead (0x4aba0c), not beyond 20 tiles (0x4abb38), not one down for
+        // an NPC that fights to subdue (0x4aba21-0x4aba3c).
+        let subdues = map.prototypes.int(o, "critter_flags").unwrap_or(0) & OCF_NON_LETHAL != 0;
+        let mut quarry: Vec<_> = pcs
+            .iter()
+            .filter(|(_, pc_at, _, sheet, (.., down))| !sheet.0.dead && crate::tile_distance(at.0, pc_at.0) <= NOTICE_GATE_TILES && !(*down && subdues))
+            .collect();
+        quarry.sort_by_key(|(_, pc_at, _, _, (.., down))| crate::tile_distance(at.0, pc_at.0) + if *down { DOWN_SORT_PENALTY } else { 0 });
+        for (&pc, pc_at, player, sheet, (prowling, inventory, _)) in quarry {
             let Some(saved) = save.players.get(&player.0) else { continue };
             let prowler = prowling.then(|| crate::prowl::Prowler::of(&rules.0, &sheet.0, &map, pc_at.0, clock.now.ms / crate::HOUR_MS, inventory.map_or(0, |i| i.borne_light(&map.prototypes)), inventory).for_watcher(npc_dark_sight(o, &map.prototypes)).watched_by(npc_watcher_helpless(o, &map.prototypes)));
             if !notices(&crate::MissileView(&map), can_look(o, &map.prototypes, false, None).then_some(pe), at.0, rotation, ears(o, &map.prototypes, false), pc_at.0, prowler) {
@@ -2635,7 +2652,7 @@ pub fn catch_lock_pickers(
     // Who reacts: the scripts' answers from last tick, then this tick's witnesses.
     let mut reacting: Vec<(NetId, NetId, PlayerId, bool)> = std::mem::take(&mut checks.witnessed);
     for (player, lock, owner, opened) in std::mem::take(&mut witnessing.0) {
-        let Some((&pc, pc_at, _, sheet, (prowling, inventory))) = pcs.iter().find(|p| p.2.0 == player) else { continue };
+        let Some((&pc, pc_at, _, sheet, (prowling, inventory, _))) = pcs.iter().find(|p| p.2.0 == player) else { continue };
         let prowler = prowling.then(|| crate::prowl::Prowler::of(&rules.0, &sheet.0, &map, pc_at.0, clock.now.ms / crate::HOUR_MS, inventory.map_or(0, |i| i.borne_light(&map.prototypes)), inventory));
         for (&npc, at, source, facing, look) in &npcs {
             if !crate::within_radius(at.0, lock, WITNESS_TILES) || map.npc_down(source.sector, source.index) || map.is_dead(source.sector, source.index) {
