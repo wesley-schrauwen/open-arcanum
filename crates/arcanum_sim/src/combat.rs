@@ -1301,6 +1301,18 @@ impl crate::LoadedMap {
             let dying = crate::death_frame_in(vfs, self.art.as_deref(), art, anim);
             self.set_object_art(sector, index, true, dying.0);
         }
+        // Out of its leader's list (0x45dbd5 → 0x45dfc0 → 0x45e040), its leader kept
+        // (0x45dbef): a joining by force no longer stands (0x45e142 clears 0x400).
+        let flags = self.npc_flags(sector, index).unwrap_or(0);
+        if flags & crate::follow::FORCED != 0 {
+            if self.guests.contains_key(&(sector, index)) {
+                if let Some(o) = self.mobiles.get_mut(&sector).and_then(|m| m.get_mut(index as usize)) {
+                    o.set_int("npc_flags", flags & !crate::follow::FORCED);
+                }
+            } else {
+                self.set_npc_flags(sector, index, flags & !crate::follow::FORCED);
+            }
+        }
     }
 }
 
